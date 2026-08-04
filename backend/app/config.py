@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-chat"
     llm_mock: bool = False
     auto_repair_attempts: int = 1
+    sandbox_mode: str = "process"
+    docker_image: str = "quick-sciplot-sandbox:latest"
 
     # 服务
     host: str = "127.0.0.1"
@@ -65,6 +67,7 @@ def public_config() -> dict:
         "api_key_masked": masked,
         "auto_repair_attempts": settings.auto_repair_attempts,
         "sandbox_timeout": settings.sandbox_timeout,
+        "sandbox_mode": settings.sandbox_mode,
     }
 
 
@@ -75,6 +78,7 @@ def update_runtime_config(
     model: str | None = None,
     mock: bool | None = None,
     auto_repair_attempts: int | None = None,
+    sandbox_mode: str | None = None,
 ) -> dict:
     """更新当前进程，并同步到被 .gitignore 保护的本地 .env。"""
     updates: dict[str, str] = {}
@@ -93,6 +97,9 @@ def update_runtime_config(
     if auto_repair_attempts is not None:
         settings.auto_repair_attempts = auto_repair_attempts
         updates["AUTO_REPAIR_ATTEMPTS"] = str(auto_repair_attempts)
+    if sandbox_mode is not None:
+        settings.sandbox_mode = sandbox_mode
+        updates["SANDBOX_MODE"] = sandbox_mode
     if updates:
         _persist_env(updates)
     return public_config()

@@ -88,6 +88,7 @@ export interface LLMConfig {
   api_key_masked: string;
   auto_repair_attempts: number;
   sandbox_timeout: number;
+  sandbox_mode: "process" | "docker";
 }
 
 export interface ConnectionResult {

@@ -52,6 +52,17 @@ npm run dev
 
 预设仓库是可选的本地资源。若已经按调研计划克隆了 `presets/SciencePlots` 等仓库，启动后会自动发现；全新 GitHub 克隆没有这些目录时，预设仍可通过内置样式运行。
 
+### 可选 Docker 强隔离
+
+Docker 模式不会默认开启。安装 Docker Desktop 后，在 `backend/` 构建沙箱镜像：
+
+```bash
+cd backend
+docker build -f Dockerfile.sandbox -t quick-sciplot-sandbox:latest .
+```
+
+然后在模型设置中选择“Docker 强隔离”，或在 `.env` 中设置 `SANDBOX_MODE=docker`。运行时会禁用网络、只读根文件系统、丢弃 Linux capabilities，并限制 CPU、内存和进程数。
+
 ## API 概览
 
 | 方法 | 路径 | 说明 |
@@ -94,7 +105,7 @@ npm run dev
 
 ## 安全说明
 
-LLM 会生成并执行任意 Python 代码。当前沙箱为"白名单 import + 超时 + 子进程隔离"的轻量方案，适合本地个人使用；**不要**将本服务暴露到公网。详见 [SECURITY.md](SECURITY.md)，Docker 强隔离仍是后续工作。
+LLM 会生成并执行任意 Python 代码。当前 process 模式为"白名单 import + 超时 + 子进程隔离"的轻量方案；Docker 模式提供额外容器隔离。两种模式都适合本地个人使用，**不要**将本服务暴露到公网。详见 [SECURITY.md](SECURITY.md)。
 
 ## 路线图
 
@@ -105,7 +116,8 @@ LLM 会生成并执行任意 Python 代码。当前沙箱为"白名单 import + 
 - [x] M4a 版本历史、版本恢复、PNG/SVG/PDF 导出
 - [x] M4b Plotly 交互图支持、一次错误自动修复
 - [x] M5a 模型配置面板、连接测试、可重复 mock/真实模型评测入口
-- [ ] M5b Docker 强隔离、真实 LLM 质量基准与人工评测流程
+- [x] M5b 可选 Docker 强隔离执行器、评测结构指标与报告导出（需 Docker 环境验证）
+- [ ] M5c 多模型真实质量基准与人工评测流程
 
 ## 许可证
 

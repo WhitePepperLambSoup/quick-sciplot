@@ -93,12 +93,22 @@ def test_config_status_and_mock_connection():
     config = client.get("/api/config")
     assert config.status_code == 200
     body = config.json()
-    assert {"base_url", "model", "mock", "has_api_key", "auto_repair_attempts"}.issubset(body)
+    assert {"base_url", "model", "mock", "has_api_key", "auto_repair_attempts", "sandbox_mode"}.issubset(body)
 
     connection = client.post("/api/config/test")
     assert connection.status_code == 200, connection.text
     assert connection.json()["ok"] is True
     assert connection.json()["mode"] == "mock"
+
+
+def test_docker_mode_reports_missing_runtime(monkeypatch, tmp_path):
+    from app import sandbox
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: None)
+    with pytest.raises(sandbox.SandboxUnavailableError):
+        sandbox.run_plot_code("pass", tmp_path / "data.csv", tmp_path / "output")
 
 
 def test_code_locator_labels():

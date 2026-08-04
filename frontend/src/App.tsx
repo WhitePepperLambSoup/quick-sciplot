@@ -99,6 +99,7 @@ function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
   const [apiKey, setApiKey] = useState("");
   const [mock, setMock] = useState(config.mock);
   const [repairAttempts, setRepairAttempts] = useState(String(config.auto_repair_attempts));
+  const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(config.sandbox_mode);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [connection, setConnection] = useState<ConnectionResult | null>(null);
@@ -113,6 +114,7 @@ function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
         model,
         mock,
         auto_repair_attempts: Number(repairAttempts),
+        sandbox_mode: sandboxMode,
       });
       setApiKey("");
       onSaved(next);
@@ -171,6 +173,13 @@ function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
             <input type="number" min="0" max="3" value={repairAttempts} onChange={(e) => setRepairAttempts(e.target.value)} />
           </label>
         </div>
+        <label className="settings-field">
+          <span>代码执行隔离</span>
+          <select value={sandboxMode} onChange={(e) => setSandboxMode(e.target.value as "process" | "docker")}>
+            <option value="process">本地受限进程（无需 Docker）</option>
+            <option value="docker">Docker 强隔离（需先构建镜像）</option>
+          </select>
+        </label>
         {message && <p className={`settings-message${connection ? " success" : ""}`}>{message}</p>}
         <div className="settings-actions">
           <button className="btn secondary" onClick={test} disabled={busy}>测试当前连接</button>

@@ -349,11 +349,13 @@ body {
   font-weight: 400;
 }
 
-.settings-field input {
+.settings-field input,
+.settings-field select {
   width: 100%;
   padding: 9px 10px;
   border: 1px solid #d7dbe6;
   border-radius: 7px;
+  background: #fff;
   color: #1f2430;
   font: inherit;
   font-size: 13px;

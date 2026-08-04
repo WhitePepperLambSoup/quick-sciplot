@@ -79,6 +79,7 @@ export async function updateLLMConfig(input: {
   model: string;
   mock: boolean;
   auto_repair_attempts: number;
+  sandbox_mode: "process" | "docker";
 }): Promise<LLMConfig> {
   return request<LLMConfig>("/config/llm", {
     method: "PUT",

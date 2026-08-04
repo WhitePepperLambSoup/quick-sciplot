@@ -61,6 +61,7 @@ class LLMConfigRequest(BaseModel):
     model: str | None = None
     mock: bool | None = None
     auto_repair_attempts: int | None = None
+    sandbox_mode: str | None = None
 
 
 def _get_dataset(dataset_id: str) -> dict:
@@ -117,6 +118,8 @@ def update_llm_config(req: LLMConfigRequest):
         raise HTTPException(status_code=400, detail="模型名称不能为空")
     if req.auto_repair_attempts is not None and not 0 <= req.auto_repair_attempts <= 3:
         raise HTTPException(status_code=400, detail="自动修复次数必须在 0 到 3 之间")
+    if req.sandbox_mode is not None and req.sandbox_mode not in {"process", "docker"}:
+        raise HTTPException(status_code=400, detail="沙箱模式只能是 process 或 docker")
     try:
         return app_config.update_runtime_config(
             api_key=req.api_key,
@@ -124,6 +127,7 @@ def update_llm_config(req: LLMConfigRequest):
             model=req.model,
             mock=req.mock,
             auto_repair_attempts=req.auto_repair_attempts,
+            sandbox_mode=req.sandbox_mode,
         )
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"保存本地配置失败: {exc}") from exc
@@ -236,6 +240,8 @@ def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", opera
     out_dir = settings.data_dir / "outputs" / uuid.uuid4().hex
     try:
         result = sandbox.run_plot_code(code, Path(ds["path"]), out_dir, preset_id)
+    except sandbox.SandboxUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except sandbox.SandboxError as exc:
         raise HTTPException(status_code=400, detail=f"代码未通过安全检查: {exc}") from exc
     except subprocess.TimeoutExpired as exc:

@@ -11,6 +11,7 @@ import ast
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -84,6 +85,10 @@ class SandboxError(Exception):
     pass
 
 
+class SandboxUnavailableError(SandboxError):
+    """请求了 Docker 模式但运行环境不可用。"""
+
+
 def validate_script(code: str) -> None:
     try:
         tree = ast.parse(code)
@@ -124,8 +129,15 @@ def _attr_name(node: ast.Attribute) -> str:
     return ".".join(reversed(parts))
 
 
-def _build_script(user_code: str, csv_path: Path, preset_id: str | None = None) -> str:
+def _build_script(
+    user_code: str,
+    csv_path: Path,
+    preset_id: str | None = None,
+    include_local_presets: bool = True,
+) -> str:
     runtime = preset_registry.runtime_options(preset_id)
+    if not include_local_presets:
+        runtime["scienceplots_src"] = None
     fallback = FALLBACK_RC_PARAMS[runtime["fallback"]]
     preamble = f"""# -*- coding: utf-8 -*-
 import os
@@ -189,26 +201,29 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
     validate_script(code)
     preset_registry.get_preset(preset_id)
     output_dir.mkdir(parents=True, exist_ok=True)
-    extensions = {"png": "png", "svg": "svg", "pdf": "pdf", "plotly": "plotly.json"}
-    output_paths = {format_name: output_dir / f"out.{extension}" for format_name, extension in extensions.items()}
+    output_paths = _output_paths(output_dir)
     for path in output_paths.values():
         path.unlink(missing_ok=True)
 
-    env = os.environ.copy()
-    env["MPLBACKEND"] = "Agg"
-    env["OUTPUT_PATH"] = str(output_paths["png"])
-    env.update({f"OUTPUT_{format_name.upper()}": str(path) for format_name, path in output_paths.items()})
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-
-    proc = subprocess.run(
-        [sys.executable, "-I", "-u", "-c", _build_script(code, csv_path, preset_id)],
-        capture_output=True,
-        text=True,
-        cwd=str(output_dir),
-        env=env,
-        timeout=settings.sandbox_timeout,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+    if settings.sandbox_mode == "process":
+        env = os.environ.copy()
+        env["MPLBACKEND"] = "Agg"
+        env["OUTPUT_PATH"] = str(output_paths["png"])
+        env.update({f"OUTPUT_{format_name.upper()}": str(path) for format_name, path in output_paths.items()})
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        proc = subprocess.run(
+            [sys.executable, "-I", "-u", "-c", _build_script(code, csv_path, preset_id)],
+            capture_output=True,
+            text=True,
+            cwd=str(output_dir),
+            env=env,
+            timeout=settings.sandbox_timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    elif settings.sandbox_mode == "docker":
+        proc = _run_in_docker(code, csv_path, output_dir, preset_id)
+    else:
+        raise SandboxError(f"未知沙箱模式: {settings.sandbox_mode}")
 
     out_path = output_paths["png"]
     result = {
@@ -229,6 +244,70 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
             except (OSError, json.JSONDecodeError) as exc:
                 result["stderr"] += f"\n读取交互图失败: {exc}"
     return result
+
+
+def _output_paths(output_dir: Path) -> dict[str, Path]:
+    extensions = {"png": "png", "svg": "svg", "pdf": "pdf", "plotly": "plotly.json"}
+    return {format_name: output_dir / f"out.{extension}" for format_name, extension in extensions.items()}
+
+
+def _run_in_docker(code: str, csv_path: Path, output_dir: Path, preset_id: str | None) -> subprocess.CompletedProcess:
+    if shutil.which("docker") is None:
+        raise SandboxUnavailableError("未找到 Docker。请安装 Docker Desktop，或将 SANDBOX_MODE 改为 process")
+
+    output_paths = _output_paths(output_dir)
+    container_env = {
+        "MPLBACKEND": "Agg",
+        "MPLCONFIGDIR": "/tmp/matplotlib",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        **{f"OUTPUT_{format_name.upper()}": f"/workspace/output/{path.name}" for format_name, path in output_paths.items()},
+    }
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--pids-limit",
+        "128",
+        "--memory",
+        "1g",
+        "--cpus",
+        "1.0",
+        "--user",
+        "65532:65532",
+        "--mount",
+        f"type=bind,source={csv_path.resolve()},target=/workspace/data.csv,readonly",
+        "--mount",
+        f"type=bind,source={output_dir.resolve()},target=/workspace/output",
+    ]
+    for key, value in container_env.items():
+        command.extend(["--env", f"{key}={value}"])
+    command.extend(
+        [
+            settings.docker_image,
+            "python",
+            "-I",
+            "-u",
+            "-c",
+            _build_script(code, Path("/workspace/data.csv"), preset_id, include_local_presets=False),
+        ]
+    )
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        cwd=str(output_dir),
+        timeout=settings.sandbox_timeout,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
 
 
 def _to_data_url(path: Path) -> str:

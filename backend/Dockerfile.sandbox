@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MPLBACKEND=Agg \
+    MPLCONFIGDIR=/tmp/matplotlib
+
+RUN groupadd --gid 65532 sciplot \
+    && useradd --uid 65532 --gid 65532 --create-home --shell /usr/sbin/nologin sciplot
+
+COPY requirements-sandbox.txt /tmp/requirements-sandbox.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-sandbox.txt \
+    && mkdir -p /workspace/output /tmp/matplotlib \
+    && chown -R 65532:65532 /workspace /tmp/matplotlib
+
+WORKDIR /workspace
+USER 65532:65532
+
+# The application supplies the script and mounts data/output at runtime.
+CMD ["python", "-I", "-u"]

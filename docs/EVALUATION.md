@@ -6,6 +6,7 @@
 - 代码是否能在当前沙箱中成功执行
 - 输出是否包含预期格式（PNG/SVG/PDF 或 Plotly JSON）
 - 每个用例的耗时和错误摘要
+- 代码是否引用 `df`、是否包含绘图调用、输出格式是否符合用例预期
 
 ## Mock 模式
 
@@ -14,6 +15,8 @@
 ```bash
 cd backend
 python evaluate.py --mock
+# 保存机器可读报告
+python evaluate.py --mock --output data/evaluation-report.json
 ```
 
 ## 真实模型模式
@@ -25,4 +28,4 @@ cd backend
 python evaluate.py
 ```
 
-Mock 通过只代表执行链路通过，不能代表真实 LLM 的绘图质量。后续应增加人工审美评分、数据忠实性检查和不同模型的对比报告。
+Mock 通过只代表执行链路通过，不能代表真实 LLM 的绘图质量。真实模式的报告可用于比较不同模型；后续应增加人工审美评分、数据忠实性检查和不同模型的对比报告。
