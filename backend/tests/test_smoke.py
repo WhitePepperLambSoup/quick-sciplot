@@ -1,0 +1,97 @@
+"""M1 闭环冒烟测试：上传 -> 摘要 -> 生成 -> 渲染 -> 编辑 -> 安全检查。"""
+
+import io
+import os
+import sys
+
+os.environ["LLM_MOCK"] = "1"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app.main import app  # noqa: E402
+
+client = TestClient(app)
+
+CSV = """year,revenue,users,group
+2020,100,1200,A
+2021,150,1800,A
+2022,210,2600,B
+2023,260,3100,B
+2024,320,3900,C
+"""
+
+
+def test_upload_and_summary():
+    resp = client.post("/api/datasets", files={"file": ("demo.csv", io.BytesIO(CSV.encode()), "text/csv")})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert "id" in data and "summary" in data
+    assert data["summary"]["shape"] == {"rows": 5, "cols": 4}
+    names = [c["name"] for c in data["summary"]["columns"]]
+    assert names == ["year", "revenue", "users", "group"]
+    assert data["summary"]["columns"][1]["mean"] == 208.0
+    return data["id"]
+
+
+def test_generate_bar():
+    ds_id = test_upload_and_summary()
+    resp = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画柱状图，对比每年的 revenue"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["run"]["success"], data["run"].get("stderr")
+    assert data["run"]["image"].startswith("data:image/png;base64,")
+    assert len(data["statements"]) >= 2, data["statements"]
+    assert any("柱状" in (s["label"] or "") or "bar" in s["code"] for s in data["statements"])
+    return data
+
+
+def test_generate_histogram_switch():
+    ds_id = test_upload_and_summary()
+    resp = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画直方图"})
+    assert resp.status_code == 200
+    assert resp.json()["run"]["success"]
+    assert "hist" in resp.json()["code"]
+
+
+def test_edit_then_run():
+    ds_id = test_upload_and_summary()
+    gen = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画柱状图"}).json()
+    resp = client.post("/api/plots/edit", json={"dataset_id": ds_id, "code": gen["code"], "instruction": "把标题改成英文"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["run"]["success"], data["run"].get("stderr")
+    assert data["code"] != gen["code"]
+
+    run = client.post("/api/plots/run", json={"dataset_id": ds_id, "code": data["code"]})
+    assert run.status_code == 200 and run.json()["run"]["success"]
+
+
+def test_sandbox_blocks_dangerous_import():
+    ds_id = test_upload_and_summary()
+    resp = client.post("/api/plots/run", json={"dataset_id": ds_id, "code": "import os\nos.system('echo hi')"})
+    assert resp.status_code == 400
+    assert "安全检查" in resp.json()["detail"]
+
+
+def test_sandbox_blocks_open():
+    ds_id = test_upload_and_summary()
+    resp = client.post("/api/plots/run", json={"dataset_id": ds_id, "code": "open('C:/Windows/win.ini')"})
+    assert resp.status_code == 400
+
+
+def test_missing_dataset_404():
+    resp = client.post("/api/plots/generate", json={"dataset_id": "nope", "instruction": "x"})
+    assert resp.status_code == 404
+
+
+def test_code_locator_labels():
+    from app import code_locator
+
+    code = "import matplotlib.pyplot as plt\nfig, ax = plt.subplots()\nax.plot([1, 2], [3, 4])\nax.set_title('t')\nax.legend()"
+    cards = code_locator.split_statements(code)
+    labels = [c["label"] for c in cards]
+    assert "绘制折线/曲线" in labels
+    assert "设置标题" in labels
+    assert "添加图例" in labels
+    assert cards[0]["start"] == 1 and cards[0]["end"] == 1

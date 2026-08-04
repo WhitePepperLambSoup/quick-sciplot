@@ -1,0 +1,20 @@
+* text=auto
+
+# 统一换行符（GitHub 网页与 Windows/macOS 检出一致）
+*.py text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+
+# 二进制文件不入 diff
+*.png binary
+*.svg binary
+*.pdf binary
+*.xlsx binary
