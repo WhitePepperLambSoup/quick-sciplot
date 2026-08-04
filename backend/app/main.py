@@ -44,6 +44,14 @@ class RunRequest(BaseModel):
     preset: str | None = None
 
 
+class ParameterRequest(BaseModel):
+    code: str
+    dataset_id: str
+    parameter: dict[str, object]
+    value: str
+    preset: str | None = None
+
+
 def _get_dataset(dataset_id: str) -> dict:
     ds = DATASETS.get(dataset_id)
     if not ds:
@@ -102,6 +110,17 @@ def run_plot(req: RunRequest):
     ds = _get_dataset(req.dataset_id)
     preset = _normalize_preset(req.preset)
     return _execute_and_decorate(req.code, ds, preset)
+
+
+@app.post("/api/plots/parameter", summary="应用一个可视化参数并重新执行")
+def apply_plot_parameter(req: ParameterRequest):
+    ds = _get_dataset(req.dataset_id)
+    preset = _normalize_preset(req.preset)
+    try:
+        code = code_locator.apply_parameter(req.code, req.parameter, req.value)
+    except code_locator.CodeEditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _execute_and_decorate(code, ds, preset)
 
 
 def _normalize_preset(preset_id: str | None) -> str:

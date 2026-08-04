@@ -28,6 +28,20 @@ export interface StatementCard {
   code: string;
   label: string;
   tags: string[];
+  parameters: CodeParameter[];
+}
+
+export interface CodeParameter {
+  id: string;
+  name: string;
+  label: string;
+  value: string;
+  source: string;
+  type: "string" | "number" | "boolean" | "literal";
+  start_line: number;
+  start_column: number;
+  end_line: number;
+  end_column: number;
 }
 
 export interface PlotRun {

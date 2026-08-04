@@ -4,6 +4,7 @@
 """
 
 import ast
+from typing import Any
 
 CALL_LABELS = {
     "ax.plot": "绘制折线/曲线",
@@ -91,6 +92,44 @@ PANDAS_LABELS = {
     "sort_values": "按值排序",
 }
 
+EDITABLE_ARGUMENTS = {
+    "alpha",
+    "bins",
+    "capsize",
+    "color",
+    "edgecolor",
+    "facecolor",
+    "figsize",
+    "fontsize",
+    "kde",
+    "label",
+    "linewidth",
+    "linestyle",
+    "marker",
+    "markersize",
+    "pad",
+    "palette",
+    "rotation",
+    "s",
+}
+
+POSITIONAL_ARGUMENTS = {
+    "ax.set_title": ((0, "标题"),),
+    "plt.title": ((0, "标题"),),
+    "ax.set_xlabel": ((0, "x 轴标签"),),
+    "plt.xlabel": ((0, "x 轴标签"),),
+    "ax.set_ylabel": ((0, "y 轴标签"),),
+    "plt.ylabel": ((0, "y 轴标签"),),
+    "ax.set_xscale": ((0, "x 轴刻度"),),
+    "ax.set_yscale": ((0, "y 轴刻度"),),
+    "plt.xscale": ((0, "x 轴刻度"),),
+    "plt.yscale": ((0, "y 轴刻度"),),
+}
+
+
+class CodeEditError(ValueError):
+    """代码已变化或参数值不符合预期。"""
+
 
 def split_statements(code: str) -> list[dict]:
     """返回按行划分的语句片段列表，附带作用标签。"""
@@ -115,6 +154,7 @@ def split_statements(code: str) -> list[dict]:
                     "code": snippet,
                     "label": labels[0] if labels else "",
                     "tags": labels,
+                    "parameters": _parameters_for(stmt, code),
                 }
             )
 
@@ -167,7 +207,130 @@ def _call_name(node: ast.AST) -> str:
     return ".".join(reversed(parts))
 
 
-def _literal(node: ast.AST) -> str:
+def _parameters_for(stmt: ast.stmt, code: str) -> list[dict[str, Any]]:
+    parameters: list[dict[str, Any]] = []
+    for node in ast.walk(stmt):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _call_name(node.func)
+        for keyword in node.keywords:
+            if keyword.arg in EDITABLE_ARGUMENTS:
+                parameter = _make_parameter(code, keyword.value, keyword.arg, keyword.arg)
+                if parameter:
+                    parameters.append(parameter)
+        for index, label in POSITIONAL_ARGUMENTS.get(call_name, ()):
+            if index < len(node.args):
+                parameter = _make_parameter(code, node.args[index], label, label)
+                if parameter:
+                    parameters.append(parameter)
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for parameter in parameters:
+        if parameter["id"] not in seen:
+            seen.add(parameter["id"])
+            unique.append(parameter)
+    return unique
+
+
+def _make_parameter(code: str, node: ast.AST, name: str, label: str) -> dict[str, Any] | None:
+    try:
+        value = ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError):
+        return None
+
+    if not isinstance(node, ast.expr) or not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
+        return None
+
+    lines = code.splitlines()
+    start_line = node.lineno
+    end_line = node.end_lineno
+    start_column = _char_column(lines[start_line - 1], node.col_offset)
+    end_column = _char_column(lines[end_line - 1], node.end_col_offset)
+    source = ast.get_source_segment(code, node) or repr(value)
+    kind = _value_kind(value)
+    return {
+        "id": f"{start_line}:{start_column}:{end_line}:{end_column}:{name}",
+        "name": name,
+        "label": label,
+        "value": _display_value(value),
+        "source": source,
+        "type": kind,
+        "start_line": start_line,
+        "start_column": start_column,
+        "end_line": end_line,
+        "end_column": end_column,
+    }
+
+
+def _value_kind(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    return "literal"
+
+
+def _display_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return str(value).lower()
+    return repr(value)
+
+
+def _char_column(line: str, byte_column: int) -> int:
+    """AST 列是 UTF-8 字节偏移，前端和替换逻辑使用字符偏移。"""
+    prefix = line.encode("utf-8")[:byte_column]
+    return len(prefix.decode("utf-8", errors="ignore"))
+
+
+def _offset(code: str, line: int, column: int) -> int:
+    if line < 1 or column < 0:
+        raise CodeEditError("参数位置无效")
+    lines = code.splitlines(keepends=True)
+    if line > len(lines) + (1 if code.endswith(("\n", "\r")) else 0):
+        raise CodeEditError("参数所在行不存在")
+    return sum(len(item) for item in lines[: line - 1]) + column
+
+
+def apply_parameter(code: str, parameter: dict[str, Any], value: str) -> str:
+    """按定位信息替换一个字面量参数，返回完整代码。"""
+    try:
+        start = _offset(code, int(parameter["start_line"]), int(parameter["start_column"]))
+        end = _offset(code, int(parameter["end_line"]), int(parameter["end_column"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CodeEditError("参数定位信息不完整") from exc
+
+    current = code[start:end]
+    expected = parameter.get("source")
+    if expected and current != expected:
+        raise CodeEditError("代码已变化，请重新选择参数")
+    replacement = _format_value(value, parameter.get("type", "literal"))
+    return code[:start] + replacement + code[end:]
+
+
+def _format_value(value: str, kind: str) -> str:
+    raw = value.strip()
+    if kind == "string":
+        return repr(value)
+    if kind == "boolean":
+        if raw.lower() in {"true", "1", "yes"}:
+            return "True"
+        if raw.lower() in {"false", "0", "no"}:
+            return "False"
+        raise CodeEditError("布尔参数只能填写 true 或 false")
+    try:
+        parsed = ast.literal_eval(raw)
+    except (ValueError, SyntaxError) as exc:
+        raise CodeEditError("参数值不是有效的 Python 字面量") from exc
+    if kind == "number" and (not isinstance(parsed, (int, float)) or isinstance(parsed, bool)):
+        raise CodeEditError("该参数需要填写数字")
+    return repr(parsed)
+
+
+def _literal(node: ast.AST) -> Any:
     try:
         return ast.literal_eval(node)
     except Exception:

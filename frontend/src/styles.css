@@ -228,16 +228,68 @@ body {
   background: #fff;
   border-top: 1px solid #e3e6ee;
   padding: 12px 20px;
+}
+
+.code-panel-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.code-panel-heading > span {
+  color: #8a90a0;
+  font-size: 11px;
+}
+
+.code-workbench {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(260px, 1fr) minmax(320px, 1.2fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+.line-viewer {
+  max-height: 430px;
+  overflow: auto;
+  padding: 6px 0;
+  border: 1px solid #e3e6ee;
+  border-radius: 8px;
+  background: #202532;
+  color: #e8ecf5;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.code-line {
+  display: flex;
+  min-width: max-content;
+  padding-right: 10px;
+  cursor: pointer;
+}
+
+.code-line:hover,
+.code-line.active {
+  background: #35496d;
+}
+
+.code-line-number {
+  width: 40px;
+  padding-right: 8px;
+  color: #8c98b3;
+  text-align: right;
+  user-select: none;
+}
+
+.code-line code {
+  white-space: pre;
 }
 
 .cards {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 260px;
+  max-height: 430px;
   overflow-y: auto;
 }
 
@@ -283,15 +335,48 @@ body {
   white-space: pre-wrap;
 }
 
+.parameter-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid #e7eaf2;
+}
+
+.parameter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: #7d8495;
+  font-size: 10px;
+}
+
+.parameter-field input {
+  min-width: 0;
+  padding: 4px 5px;
+  border: 1px solid #d7dbe6;
+  border-radius: 4px;
+  color: #1f2430;
+  font: inherit;
+  font-size: 11px;
+}
+
 .editor {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
+.editor-label {
+  color: #454b5e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .editor textarea {
   flex: 1;
-  min-height: 220px;
+  min-height: 430px;
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
   border: 1px solid #d7dbe6;
@@ -319,7 +404,17 @@ body {
   }
 
   .code-panel {
-    grid-template-columns: 1fr;
     padding: 10px;
+  }
+
+  .code-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .line-viewer,
+  .cards,
+  .editor textarea {
+    max-height: 300px;
+    min-height: 220px;
   }
 }

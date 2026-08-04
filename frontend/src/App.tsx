@@ -1,6 +1,45 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { editPlot, generatePlot, listPresets, runCode, uploadDataset } from "./api";
-import type { ChatMessage, DatasetInfo, PlotResult, Preset, StatementCard } from "./types";
+import { applyParameter, editPlot, generatePlot, listPresets, runCode, uploadDataset } from "./api";
+import type { ChatMessage, CodeParameter, DatasetInfo, PlotResult, Preset, StatementCard } from "./types";
+
+interface ParameterInputProps {
+  parameter: CodeParameter;
+  disabled: boolean;
+  onApply: (parameter: CodeParameter, value: string) => Promise<void>;
+}
+
+function ParameterInput({ parameter, disabled, onApply }: ParameterInputProps) {
+  const [value, setValue] = useState(parameter.value);
+
+  useEffect(() => {
+    setValue(parameter.value);
+  }, [parameter.value]);
+
+  const commit = () => {
+    if (!disabled && value !== parameter.value) {
+      void onApply(parameter, value);
+    }
+  };
+
+  return (
+    <label className="parameter-field">
+      <span>{parameter.label}</span>
+      <input
+        type={parameter.type === "number" ? "number" : "text"}
+        value={value}
+        disabled={disabled}
+        title={`源码位置 L${parameter.start_line}`}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.currentTarget.blur();
+          }
+        }}
+      />
+    </label>
+  );
+}
 
 export default function App() {
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
@@ -72,6 +111,25 @@ export default function App() {
           ? { role: "assistant", content: "编辑后的代码已重新渲染 ✓" }
           : { role: "assistant", content: "运行失败：" + (res.run.stderr || "无错误信息"), error: true },
       ]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyParameterChange = async (parameter: CodeParameter, value: string) => {
+    if (!dataset || !result || busy) return;
+    setBusy(true);
+    try {
+      const res = await applyParameter(dataset.id, result.code, parameter, value, selectedPreset);
+      setResult(res);
+      setSelectedPreset(res.preset || selectedPreset);
+      setEditorCode(res.code);
+      setActiveCard(
+        res.statements.find((statement) => statement.start <= parameter.start_line && statement.end >= parameter.start_line) ?? null,
+      );
+      setMessages((m) => [...m, { role: "assistant", content: `已应用“${parameter.label}”并重新渲染 ✓` }]);
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
     } finally {
@@ -201,31 +259,65 @@ export default function App() {
 
       {result && (
         <section className="code-panel">
-          <h2>代码定位</h2>
-          <div className="cards">
-            {result.statements.map((s, i) => (
-              <div
-                key={i}
-                className={`card ${activeCard?.start === s.start ? "active" : ""}`}
-                onClick={() => {
-                  setActiveCard(s);
-                  const lines = result.code.split("\n").slice(s.start - 1, s.end);
-                  setEditorCode(lines.join("\n"));
-                }}
-              >
-                <div className="card-head">
-                  <span className="lines">L{s.start}–{s.end}</span>
-                  <span className="label">{s.label || "代码片段"}</span>
-                </div>
-                <pre className="card-code">{s.code}</pre>
-              </div>
-            ))}
+          <div className="code-panel-heading">
+            <h2>代码定位</h2>
+            <span>点击片段定位源码；参数失焦后自动应用并重绘</span>
           </div>
-          <div className="editor">
-            <textarea value={editorCode} onChange={(e) => setEditorCode(e.target.value)} spellCheck={false} />
-            <button className="btn" onClick={runEditor} disabled={busy}>
-              运行此代码
-            </button>
+          <div className="code-workbench">
+            <div className="line-viewer" aria-label="带行号的完整代码">
+              {result.code.split("\n").map((line, index) => {
+                const lineNumber = index + 1;
+                const statement = result.statements.find((item) => lineNumber >= item.start && lineNumber <= item.end);
+                const active = Boolean(activeCard && lineNumber >= activeCard.start && lineNumber <= activeCard.end);
+                return (
+                  <div
+                    key={lineNumber}
+                    className={`code-line${active ? " active" : ""}`}
+                    onClick={() => statement && setActiveCard(statement)}
+                  >
+                    <span className="code-line-number">{lineNumber}</span>
+                    <code>{line || " "}</code>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="cards">
+              {result.statements.map((s, i) => (
+                <div
+                  key={`${s.start}-${s.end}-${i}`}
+                  className={`card ${activeCard?.start === s.start ? "active" : ""}`}
+                  onClick={() => {
+                    setActiveCard(s);
+                    setEditorCode(result.code);
+                  }}
+                >
+                  <div className="card-head">
+                    <span className="lines">L{s.start}–{s.end}</span>
+                    <span className="label">{s.label || "代码片段"}</span>
+                  </div>
+                  <pre className="card-code">{s.code}</pre>
+                  {s.parameters.length > 0 && (
+                    <div className="parameter-list" onClick={(e) => e.stopPropagation()}>
+                      {s.parameters.map((parameter) => (
+                        <ParameterInput
+                          key={parameter.id}
+                          parameter={parameter}
+                          disabled={busy}
+                          onApply={applyParameterChange}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="editor">
+              <div className="editor-label">完整代码（可直接编辑）</div>
+              <textarea value={editorCode} onChange={(e) => setEditorCode(e.target.value)} spellCheck={false} />
+              <button className="btn" onClick={runEditor} disabled={busy}>
+                {busy ? "执行中…" : "运行完整代码"}
+              </button>
+            </div>
           </div>
         </section>
       )}

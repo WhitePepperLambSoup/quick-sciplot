@@ -4,6 +4,8 @@ import io
 import os
 import sys
 
+import pytest
+
 os.environ["LLM_MOCK"] = "1"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -97,6 +99,54 @@ def test_code_locator_labels():
     assert "设置标题" in labels
     assert "添加图例" in labels
     assert cards[0]["start"] == 1 and cards[0]["end"] == 1
+
+
+def test_code_locator_parameters_and_patch():
+    from app import code_locator
+
+    code = """import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.bar([1, 2], [3, 4], color='red', alpha=0.5, linewidth=2)
+ax.set_title('My plot')
+"""
+    cards = code_locator.split_statements(code)
+    parameters = [parameter for card in cards for parameter in card["parameters"]]
+    by_name = {parameter["name"]: parameter for parameter in parameters}
+    assert {"figsize", "color", "alpha", "linewidth"}.issubset(by_name)
+    assert by_name["color"]["value"] == "red"
+
+    patched = code_locator.apply_parameter(code, by_name["color"], "blue")
+    with pytest.raises(code_locator.CodeEditError):
+        code_locator.apply_parameter(patched, by_name["alpha"], "0.8")
+    fresh_parameters = [parameter for card in code_locator.split_statements(patched) for parameter in card["parameters"]]
+    fresh_alpha = next(parameter for parameter in fresh_parameters if parameter["name"] == "alpha")
+    patched = code_locator.apply_parameter(patched, fresh_alpha, "0.8")
+    assert "color='blue'" in patched
+    assert "alpha=0.8" in patched
+
+    with pytest.raises(code_locator.CodeEditError):
+        code_locator.apply_parameter(code.replace("red", "green"), by_name["color"], "blue")
+
+
+def test_parameter_endpoint_rerenders():
+    from app import code_locator
+
+    ds_id = upload_dataset()["id"]
+    code = """import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.bar([1, 2], [3, 4], color='red', alpha=0.5)
+ax.set_title('test')
+"""
+    card = code_locator.split_statements(code)[2]
+    parameter = next(item for item in card["parameters"] if item["name"] == "color")
+    resp = client.post(
+        "/api/plots/parameter",
+        json={"dataset_id": ds_id, "code": code, "parameter": parameter, "value": "blue"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert "color='blue'" in data["code"]
+    assert data["run"]["success"], data["run"].get("stderr")
 
 
 def test_preset_list_has_fallbacks():

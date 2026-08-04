@@ -1,4 +1,4 @@
-import type { DatasetInfo, PlotResult, Preset } from "./types";
+import type { CodeParameter, DatasetInfo, PlotResult, Preset } from "./types";
 
 const BASE = "/api";
 
@@ -43,5 +43,19 @@ export async function runCode(datasetId: string, code: string, preset?: string):
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ dataset_id: datasetId, code, preset }),
+  });
+}
+
+export async function applyParameter(
+  datasetId: string,
+  code: string,
+  parameter: CodeParameter,
+  value: string,
+  preset?: string,
+): Promise<PlotResult> {
+  return request<PlotResult>("/plots/parameter", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataset_id: datasetId, code, parameter, value, preset }),
   });
 }
