@@ -1,0 +1,20 @@
+[
+  {
+    "id": "trend-static",
+    "instruction": "画一张适合论文的 revenue 趋势折线图",
+    "preset": "science",
+    "csv": "year,revenue,users,group\n2020,100,1200,A\n2021,150,1800,A\n2022,210,2600,B\n2023,260,3100,B\n2024,320,3900,C\n"
+  },
+  {
+    "id": "distribution-static",
+    "instruction": "画 revenue 和 users 的分布直方图",
+    "preset": "science-nature",
+    "csv": "sample,revenue,users\nA,100,1200\nB,150,1800\nC,210,2600\nD,260,3100\nE,320,3900\n"
+  },
+  {
+    "id": "interactive-scatter",
+    "instruction": "生成一个可缩放、可悬停查看数据的交互式散点图",
+    "preset": "default",
+    "csv": "x,y,group\n1,2,A\n2,4,A\n3,3,B\n4,8,B\n5,7,C\n"
+  }
+]

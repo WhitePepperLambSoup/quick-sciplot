@@ -1,4 +1,4 @@
-import type { CodeParameter, DatasetInfo, PlotResult, Preset, RevisionSummary } from "./types";
+import type { CodeParameter, ConnectionResult, DatasetInfo, LLMConfig, PlotResult, Preset, RevisionSummary } from "./types";
 
 const BASE = "/api";
 
@@ -67,4 +67,26 @@ export async function listHistory(datasetId: string): Promise<RevisionSummary[]>
 
 export async function restoreRevision(revisionId: string): Promise<PlotResult> {
   return request<PlotResult>(`/plots/history/${revisionId}/restore`, { method: "POST" });
+}
+
+export async function getConfig(): Promise<LLMConfig> {
+  return request<LLMConfig>("/config");
+}
+
+export async function updateLLMConfig(input: {
+  api_key?: string;
+  base_url: string;
+  model: string;
+  mock: boolean;
+  auto_repair_attempts: number;
+}): Promise<LLMConfig> {
+  return request<LLMConfig>("/config/llm", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function testLLMConnection(): Promise<ConnectionResult> {
+  return request<ConnectionResult>("/config/test", { method: "POST" });
 }

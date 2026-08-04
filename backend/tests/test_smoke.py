@@ -89,6 +89,18 @@ def test_missing_dataset_404():
     assert resp.status_code == 404
 
 
+def test_config_status_and_mock_connection():
+    config = client.get("/api/config")
+    assert config.status_code == 200
+    body = config.json()
+    assert {"base_url", "model", "mock", "has_api_key", "auto_repair_attempts"}.issubset(body)
+
+    connection = client.post("/api/config/test")
+    assert connection.status_code == 200, connection.text
+    assert connection.json()["ok"] is True
+    assert connection.json()["mode"] == "mock"
+
+
 def test_code_locator_labels():
     from app import code_locator
 

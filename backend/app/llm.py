@@ -1,6 +1,7 @@
 """LLM 封装：OpenAI 兼容 chat/completions + 提示词 + mock 模式。"""
 
 import json
+import time
 
 import httpx
 
@@ -24,6 +25,24 @@ SYSTEM_PROMPT = """你是一名科研绘图助手。根据用户需求和数据�
 
 class LLMError(Exception):
     pass
+
+
+def test_connection() -> dict:
+    """发送最小请求，供设置页验证当前模型配置。"""
+    started = time.perf_counter()
+    content = _call_chat(
+        [
+            {"role": "system", "content": "You are a connectivity check. Reply with OK only."},
+            {"role": "user", "content": "Reply with OK."},
+        ],
+        temperature=0,
+    )
+    return {
+        "ok": True,
+        "mode": "mock" if settings.llm_mock else "api",
+        "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+        "preview": content.strip()[:120],
+    }
 
 
 def _call_chat(messages: list[dict], temperature: float = 0.3) -> str:

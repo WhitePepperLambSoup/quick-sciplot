@@ -2,14 +2,28 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   applyParameter,
   editPlot,
+  getConfig,
   generatePlot,
   listHistory,
   listPresets,
   restoreRevision,
   runCode,
+  testLLMConnection,
+  updateLLMConfig,
   uploadDataset,
 } from "./api";
-import type { ChatMessage, CodeParameter, DatasetInfo, PlotResult, PlotlyFigure, Preset, RevisionSummary, StatementCard } from "./types";
+import type {
+  ChatMessage,
+  CodeParameter,
+  ConnectionResult,
+  DatasetInfo,
+  LLMConfig,
+  PlotResult,
+  PlotlyFigure,
+  Preset,
+  RevisionSummary,
+  StatementCard,
+} from "./types";
 
 interface ParameterInputProps {
   parameter: CodeParameter;
@@ -73,6 +87,100 @@ function InteractivePlot({ figure }: { figure: PlotlyFigure }) {
   return <div ref={plotRef} className="interactive-plot" aria-label="交互式 Plotly 图表" />;
 }
 
+interface SettingsDialogProps {
+  config: LLMConfig;
+  onClose: () => void;
+  onSaved: (config: LLMConfig) => void;
+}
+
+function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
+  const [baseUrl, setBaseUrl] = useState(config.base_url);
+  const [model, setModel] = useState(config.model);
+  const [apiKey, setApiKey] = useState("");
+  const [mock, setMock] = useState(config.mock);
+  const [repairAttempts, setRepairAttempts] = useState(String(config.auto_repair_attempts));
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [connection, setConnection] = useState<ConnectionResult | null>(null);
+
+  const save = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const next = await updateLLMConfig({
+        ...(apiKey ? { api_key: apiKey } : {}),
+        base_url: baseUrl,
+        model,
+        mock,
+        auto_repair_attempts: Number(repairAttempts),
+      });
+      setApiKey("");
+      onSaved(next);
+      setMessage("配置已保存");
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const test = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await testLLMConnection();
+      setConnection(result);
+      setMessage(`连接成功，延迟 ${result.latency_ms} ms`);
+    } catch (error) {
+      setConnection(null);
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div className="settings-heading">
+          <div>
+            <h2 id="settings-title">模型设置</h2>
+            <p>配置保存在本机 backend/.env，不会通过配置接口返回完整密钥。</p>
+          </div>
+          <button className="icon-btn" onClick={onClose} aria-label="关闭设置">×</button>
+        </div>
+        <label className="settings-field">
+          <span>OpenAI 兼容 Base URL</span>
+          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.deepseek.com/v1" />
+        </label>
+        <label className="settings-field">
+          <span>模型名称</span>
+          <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" />
+        </label>
+        <label className="settings-field">
+          <span>API Key {config.has_api_key && <small>当前：{config.api_key_masked}</small>}</span>
+          <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="留空表示保持当前密钥" autoComplete="new-password" />
+        </label>
+        <div className="settings-row">
+          <label className="settings-check">
+            <input type="checkbox" checked={mock} onChange={(e) => setMock(e.target.checked)} />
+            <span>Mock 演示模式</span>
+          </label>
+          <label className="settings-field compact">
+            <span>自动修复次数（0–3）</span>
+            <input type="number" min="0" max="3" value={repairAttempts} onChange={(e) => setRepairAttempts(e.target.value)} />
+          </label>
+        </div>
+        {message && <p className={`settings-message${connection ? " success" : ""}`}>{message}</p>}
+        <div className="settings-actions">
+          <button className="btn secondary" onClick={test} disabled={busy}>测试当前连接</button>
+          <button className="btn" onClick={save} disabled={busy}>{busy ? "处理中…" : "保存配置"}</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 const OPERATION_LABELS: Record<string, string> = {
   generate: "生成",
   edit: "对话调整",
@@ -86,6 +194,8 @@ export default function App() {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [selectedPreset, setSelectedPreset] = useState("default");
   const [history, setHistory] = useState<RevisionSummary[]>([]);
+  const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [result, setResult] = useState<PlotResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -97,6 +207,7 @@ export default function App() {
 
   useEffect(() => {
     listPresets().then(setPresets).catch(() => setPresets([]));
+    getConfig().then(setLlmConfig).catch(() => setLlmConfig(null));
   }, []);
 
   useEffect(() => {
@@ -222,6 +333,14 @@ export default function App() {
       <header className="header">
         <h1>Quick SciPlot</h1>
         <span className="sub">LLM 驱动的快捷科研画图</span>
+        {llmConfig && (
+          <span className={`llm-status${llmConfig.mock || llmConfig.has_api_key ? " ready" : ""}`}>
+            {llmConfig.mock ? "Mock 模式" : llmConfig.has_api_key ? `已配置 · ${llmConfig.model}` : "未配置 API"}
+          </span>
+        )}
+        <button className="btn secondary" onClick={() => setSettingsOpen(true)} disabled={busy || !llmConfig}>
+          模型设置
+        </button>
         <input
           ref={fileRef}
           type="file"
@@ -446,6 +565,9 @@ export default function App() {
             </div>
           </div>
         </section>
+      )}
+      {settingsOpen && llmConfig && (
+        <SettingsDialog config={llmConfig} onClose={() => setSettingsOpen(false)} onSaved={setLlmConfig} />
       )}
     </div>
   );

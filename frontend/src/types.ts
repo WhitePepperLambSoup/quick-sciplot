@@ -80,6 +80,23 @@ export interface RevisionSummary {
   created_at: string;
 }
 
+export interface LLMConfig {
+  base_url: string;
+  model: string;
+  mock: boolean;
+  has_api_key: boolean;
+  api_key_masked: string;
+  auto_repair_attempts: number;
+  sandbox_timeout: number;
+}
+
+export interface ConnectionResult {
+  ok: boolean;
+  mode: string;
+  latency_ms: number;
+  preview: string;
+}
+
 export interface Preset {
   id: string;
   name: string;

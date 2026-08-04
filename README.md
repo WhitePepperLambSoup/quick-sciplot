@@ -15,6 +15,7 @@
 - **风格预设**：可选默认、SciencePlots、Nature、IEEE、色盲友好、LovelyPlots、tueplots 等预设；本地有第三方仓库时自动使用，没有时使用内置兜底
 - **版本历史与导出**：SQLite 保存每次生成/编辑/参数调整，可恢复任意成功版本；支持 PNG/SVG/PDF 下载
 - **交互图与自动修复**：明确要求交互图时使用 Plotly，浏览器按需加载交互引擎；生成代码运行失败时自动请求 LLM 修复一次
+- **模型配置面板**：运行中切换 OpenAI 兼容 Base URL、模型、Mock 模式和自动修复次数；API Key 只保存到本地 `.env`
 
 ## 快速开始
 
@@ -28,6 +29,8 @@ pip install -r requirements.txt
 ```
 
 配置密钥：复制 `.env.example` 为 `.env` 并填写 LLM 配置（默认 DeepSeek 兼容接口）。
+
+也可以启动后点击右上角“模型设置”填写配置。配置接口只返回脱敏后的密钥状态，不会返回完整 API Key。
 
 无密钥时可用 mock 模式验证全流程：
 
@@ -56,6 +59,9 @@ npm run dev
 | POST | `/api/datasets` | 上传数据文件，返回数据集 id 与摘要 |
 | GET | `/api/datasets/{id}` | 获取数据集摘要与预览 |
 | GET | `/api/presets` | 获取风格预设及本地资源状态 |
+| GET | `/api/config` | 获取非敏感模型配置状态 |
+| PUT | `/api/config/llm` | 更新本地模型配置 |
+| POST | `/api/config/test` | 测试当前 LLM 连接 |
 | POST | `/api/plots/generate` | 依据指令 + 数据摘要生成并执行绘图代码 |
 | POST | `/api/plots/edit` | 在已有代码上按指令修改并重新执行 |
 | POST | `/api/plots/run` | 直接执行一段代码（编辑预览用） |
@@ -78,6 +84,7 @@ npm run dev
 │       ├── sandbox.py     # 沙箱执行绘图代码
 │       └── code_locator.py# AST 代码片段、参数定位与安全替换
 ├── frontend/          # React + Vite + TypeScript 前端
+├── docs/EVALUATION.md  # 可重复绘图评测说明
 ├── presets/           # 本地克隆的风格预设仓库（不入库，见 README 下方说明）
 ├── references/        # 本地克隆的参考实现（不入库）
 └── skills/            # 本地克隆的绘图 skill 素材（不入库）
@@ -87,7 +94,7 @@ npm run dev
 
 ## 安全说明
 
-LLM 会生成并执行任意 Python 代码。当前沙箱为"白名单 import + 超时 + 子进程隔离"的轻量方案，适合本地个人使用；**不要**将本服务暴露到公网。计划后续提供 Docker 强隔离。
+LLM 会生成并执行任意 Python 代码。当前沙箱为"白名单 import + 超时 + 子进程隔离"的轻量方案，适合本地个人使用；**不要**将本服务暴露到公网。详见 [SECURITY.md](SECURITY.md)，Docker 强隔离仍是后续工作。
 
 ## 路线图
 
@@ -97,7 +104,8 @@ LLM 会生成并执行任意 Python 代码。当前沙箱为"白名单 import + 
 - [x] M3 代码定位增强：完整代码行高亮、参数表单化、直接编辑与重绘
 - [x] M4a 版本历史、版本恢复、PNG/SVG/PDF 导出
 - [x] M4b Plotly 交互图支持、一次错误自动修复
-- [ ] M5 评测集、真实 LLM 质量基准、Docker 强隔离
+- [x] M5a 模型配置面板、连接测试、可重复 mock/真实模型评测入口
+- [ ] M5b Docker 强隔离、真实 LLM 质量基准与人工评测流程
 
 ## 许可证
 

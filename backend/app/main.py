@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from . import config as app_config
 from . import code_locator, data_loader, database, llm, preset_registry, sandbox
 from .config import settings
 
@@ -54,6 +55,14 @@ class ParameterRequest(BaseModel):
     preset: str | None = None
 
 
+class LLMConfigRequest(BaseModel):
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    mock: bool | None = None
+    auto_repair_attempts: int | None = None
+
+
 def _get_dataset(dataset_id: str) -> dict:
     ds = DATASETS.get(dataset_id)
     if ds is None:
@@ -90,6 +99,42 @@ def get_dataset(dataset_id: str):
 @app.get("/api/presets", summary="获取可用绘图预设")
 def get_presets():
     return {"presets": preset_registry.list_presets()}
+
+
+@app.get("/api/config", summary="获取非敏感运行配置")
+def get_config():
+    return app_config.public_config()
+
+
+@app.put("/api/config/llm", summary="更新本地 LLM 配置")
+def update_llm_config(req: LLMConfigRequest):
+    if req.base_url is not None and not req.base_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="LLM Base URL 必须以 http:// 或 https:// 开头")
+    for value in (req.api_key, req.base_url, req.model):
+        if value is not None and any(char in value for char in "\r\n"):
+            raise HTTPException(status_code=400, detail="配置值不能包含换行符")
+    if req.model is not None and not req.model.strip():
+        raise HTTPException(status_code=400, detail="模型名称不能为空")
+    if req.auto_repair_attempts is not None and not 0 <= req.auto_repair_attempts <= 3:
+        raise HTTPException(status_code=400, detail="自动修复次数必须在 0 到 3 之间")
+    try:
+        return app_config.update_runtime_config(
+            api_key=req.api_key,
+            base_url=req.base_url,
+            model=req.model,
+            mock=req.mock,
+            auto_repair_attempts=req.auto_repair_attempts,
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"保存本地配置失败: {exc}") from exc
+
+
+@app.post("/api/config/test", summary="测试当前 LLM 连接")
+def test_llm_config():
+    try:
+        return llm.test_connection()
+    except llm.LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/plots/generate", summary="按指令生成并执行绘图代码")
