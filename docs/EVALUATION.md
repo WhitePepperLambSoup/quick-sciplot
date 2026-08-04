@@ -28,4 +28,13 @@ cd backend
 python evaluate.py
 ```
 
+比较多个 OpenAI 兼容模型时，复制并修改 `backend/model_matrix.example.json`（只填写环境变量名，不要填写密钥）：
+
+```bash
+cd backend
+python evaluate.py --model-config model_matrix.example.json --output reports/models.json --human-report reports/models.html
+```
+
+HTML 报告包含静态图预览、Plotly JSON 链接、自动指标和 1–5 分人工评分表。点击报告中的“导出评分 JSON”保存人工评分。
+
 Mock 通过只代表执行链路通过，不能代表真实 LLM 的绘图质量。真实模式的报告可用于比较不同模型；后续应增加人工审美评分、数据忠实性检查和不同模型的对比报告。

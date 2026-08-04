@@ -31,6 +31,8 @@ frontend/.vite/
 # --- 运行时产物 ---
 backend/data/
 backend/tmp/
+backend/reports/
+reports/
 *.png
 *.svg
 *.pdf
