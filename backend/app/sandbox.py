@@ -15,9 +15,67 @@ import sys
 from pathlib import Path
 
 from .config import settings
+from . import preset_registry
 
 FORBIDDEN_NAMES = {"eval", "exec", "compile", "open", "input", "breakpoint", "globals", "locals", "vars", "getattr", "setattr", "delattr"}
 FORBIDDEN_ATTRS = {"os.system", "os.popen", "os.remove", "os.unlink", "os.rmdir", "shutil", "subprocess", "socket", "requests", "urllib", "pathlib.Path.open", "Path.open"}
+
+FALLBACK_RC_PARAMS = {
+    "default": {},
+    "science": {
+        "figure.figsize": (3.5, 2.625),
+        "axes.linewidth": 0.8,
+        "axes.grid": False,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "legend.frameon": False,
+        "font.size": 9,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.05,
+    },
+    "nature": {
+        "figure.figsize": (3.35, 2.5),
+        "axes.linewidth": 0.8,
+        "axes.grid": False,
+        "font.family": "sans-serif",
+        "font.size": 8,
+        "axes.labelsize": 8,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+        "legend.frameon": False,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.04,
+    },
+    "ieee": {
+        "figure.figsize": (3.5, 2.625),
+        "axes.linewidth": 0.7,
+        "axes.grid": False,
+        "font.family": "serif",
+        "font.size": 8,
+        "lines.linewidth": 1.0,
+        "legend.frameon": False,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.04,
+    },
+    "lovely": {
+        "figure.figsize": (6.4, 4.2),
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": False,
+        "font.size": 10,
+        "legend.frameon": False,
+        "savefig.bbox": "tight",
+    },
+    "tueplots": {
+        "figure.figsize": (3.35, 2.5),
+        "font.size": 8,
+        "axes.labelsize": 8,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+        "legend.frameon": False,
+        "savefig.bbox": "tight",
+    },
+}
 
 
 class SandboxError(Exception):
@@ -64,17 +122,40 @@ def _attr_name(node: ast.Attribute) -> str:
     return ".".join(reversed(parts))
 
 
-def _build_script(user_code: str, csv_path: Path) -> str:
+def _build_script(user_code: str, csv_path: Path, preset_id: str | None = None) -> str:
+    runtime = preset_registry.runtime_options(preset_id)
+    fallback = FALLBACK_RC_PARAMS[runtime["fallback"]]
     preamble = f"""# -*- coding: utf-8 -*-
 import os
+import sys
 os.environ.setdefault("MPLBACKEND", "Agg")
 import matplotlib
 matplotlib.use("Agg")
+
+_scienceplots_src = {runtime["scienceplots_src"]!r}
+if _scienceplots_src:
+    sys.path.insert(0, _scienceplots_src)
+    try:
+        import scienceplots  # noqa: F401
+    except Exception:
+        pass
+
 import pandas as pd
-df = pd.read_csv(r"{csv_path}")
+df = pd.read_csv({str(csv_path)!r})
+import matplotlib.pyplot as plt
+
+_selected_styles = {runtime["styles"]!r}
+if _selected_styles:
+    try:
+        plt.style.use(_selected_styles)
+    except Exception:
+        pass
+
+_fallback_rc_params = {fallback!r}
+if _fallback_rc_params:
+    plt.rcParams.update(_fallback_rc_params)
 """
     epilogue = """
-import matplotlib.pyplot as plt
 import os as _os
 _fig = plt.gcf()
 _fig.savefig(_os.environ["OUTPUT_PATH"], dpi=300, bbox_inches="tight")
@@ -83,8 +164,9 @@ plt.close("all")
     return preamble + user_code + epilogue
 
 
-def run_plot_code(code: str, csv_path: Path, output_dir: Path) -> dict:
+def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | None = None) -> dict:
     validate_script(code)
+    preset_registry.get_preset(preset_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / "out.png"
     out_path.unlink(missing_ok=True)
@@ -95,7 +177,7 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path) -> dict:
     env["PYTHONDONTWRITEBYTECODE"] = "1"
 
     proc = subprocess.run(
-        [sys.executable, "-I", "-u", "-c", _build_script(code, csv_path)],
+        [sys.executable, "-I", "-u", "-c", _build_script(code, csv_path, preset_id)],
         capture_output=True,
         text=True,
         cwd=str(output_dir),

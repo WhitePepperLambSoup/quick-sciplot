@@ -16,6 +16,7 @@ SYSTEM_PROMPT = """你是一名科研绘图助手。根据用户需求和数据�
 5. 中文文本标签请在代码内设置 matplotlib 中文字体（例如 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']），并加 plt.rcParams['axes.unicode_minus'] = False。
 6. 代码必须健壮：对缺失值做处理，避免运行时错误。
 7. 一个完整绘图（可有多个子图），图要美观、适合期刊发表。
+8. 系统会在执行代码前自动应用用户选择的风格预设，不要导入第三方预设包，也不要用 plt.style.use 覆盖系统预设。
 
 数据摘要如下：
 """
@@ -69,7 +70,7 @@ def _extract_code(text: str) -> str:
 
 
 def generate_plot_code(instruction: str, summary: dict, preset: str | None = None) -> str:
-    preset_hint = f"\n请使用预设风格: {preset}" if preset else ""
+    preset_hint = f"\n系统选择的风格预设 ID：{preset or 'default'}（执行器会自动应用，请不要在代码中重复设置全局风格）"
     user_msg = f"用户想画的图：{instruction}\n{json.dumps(summary, ensure_ascii=False, indent=1)[:6000]}{preset_hint}"
     code = _extract_code(_call_chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
     if not code.strip():
@@ -77,11 +78,12 @@ def generate_plot_code(instruction: str, summary: dict, preset: str | None = Non
     return code
 
 
-def edit_plot_code(code: str, instruction: str, summary: dict) -> str:
+def edit_plot_code(code: str, instruction: str, summary: dict, preset: str | None = None) -> str:
     user_msg = (
         "这是当前绘图代码：\n```python\n" + code + "\n```\n\n"
         f"请按下面的修改要求输出修改后的完整代码（保持其余部分不变）：\n{instruction}\n\n"
-        f"数据摘要：\n{json.dumps(summary, ensure_ascii=False)[:3000]}"
+        f"数据摘要：\n{json.dumps(summary, ensure_ascii=False)[:3000]}\n"
+        f"当前风格预设：{preset or 'default'}（执行器会自动应用）"
     )
     edited = _extract_code(_call_chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
     if settings.llm_mock:

@@ -1,4 +1,4 @@
-import type { DatasetInfo, PlotResult } from "./types";
+import type { DatasetInfo, PlotResult, Preset } from "./types";
 
 const BASE = "/api";
 
@@ -17,6 +17,11 @@ export async function uploadDataset(file: File): Promise<DatasetInfo> {
   return request<DatasetInfo>("/datasets", { method: "POST", body: form });
 }
 
+export async function listPresets(): Promise<Preset[]> {
+  const data = await request<{ presets: Preset[] }>("/presets");
+  return data.presets;
+}
+
 export async function generatePlot(datasetId: string, instruction: string, preset?: string): Promise<PlotResult> {
   return request<PlotResult>("/plots/generate", {
     method: "POST",
@@ -25,18 +30,18 @@ export async function generatePlot(datasetId: string, instruction: string, prese
   });
 }
 
-export async function editPlot(datasetId: string, code: string, instruction: string): Promise<PlotResult> {
+export async function editPlot(datasetId: string, code: string, instruction: string, preset?: string): Promise<PlotResult> {
   return request<PlotResult>("/plots/edit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dataset_id: datasetId, code, instruction }),
+    body: JSON.stringify({ dataset_id: datasetId, code, instruction, preset }),
   });
 }
 
-export async function runCode(datasetId: string, code: string): Promise<PlotResult> {
+export async function runCode(datasetId: string, code: string, preset?: string): Promise<PlotResult> {
   return request<PlotResult>("/plots/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dataset_id: datasetId, code }),
+    body: JSON.stringify({ dataset_id: datasetId, code, preset }),
   });
 }

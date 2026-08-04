@@ -22,20 +22,23 @@ CSV = """year,revenue,users,group
 """
 
 
-def test_upload_and_summary():
+def upload_dataset() -> dict:
     resp = client.post("/api/datasets", files={"file": ("demo.csv", io.BytesIO(CSV.encode()), "text/csv")})
     assert resp.status_code == 200, resp.text
-    data = resp.json()
+    return resp.json()
+
+
+def test_upload_and_summary():
+    data = upload_dataset()
     assert "id" in data and "summary" in data
     assert data["summary"]["shape"] == {"rows": 5, "cols": 4}
     names = [c["name"] for c in data["summary"]["columns"]]
     assert names == ["year", "revenue", "users", "group"]
     assert data["summary"]["columns"][1]["mean"] == 208.0
-    return data["id"]
 
 
 def test_generate_bar():
-    ds_id = test_upload_and_summary()
+    ds_id = upload_dataset()["id"]
     resp = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画柱状图，对比每年的 revenue"})
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -43,11 +46,10 @@ def test_generate_bar():
     assert data["run"]["image"].startswith("data:image/png;base64,")
     assert len(data["statements"]) >= 2, data["statements"]
     assert any("柱状" in (s["label"] or "") or "bar" in s["code"] for s in data["statements"])
-    return data
 
 
 def test_generate_histogram_switch():
-    ds_id = test_upload_and_summary()
+    ds_id = upload_dataset()["id"]
     resp = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画直方图"})
     assert resp.status_code == 200
     assert resp.json()["run"]["success"]
@@ -55,7 +57,7 @@ def test_generate_histogram_switch():
 
 
 def test_edit_then_run():
-    ds_id = test_upload_and_summary()
+    ds_id = upload_dataset()["id"]
     gen = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画柱状图"}).json()
     resp = client.post("/api/plots/edit", json={"dataset_id": ds_id, "code": gen["code"], "instruction": "把标题改成英文"})
     assert resp.status_code == 200, resp.text
@@ -68,14 +70,14 @@ def test_edit_then_run():
 
 
 def test_sandbox_blocks_dangerous_import():
-    ds_id = test_upload_and_summary()
+    ds_id = upload_dataset()["id"]
     resp = client.post("/api/plots/run", json={"dataset_id": ds_id, "code": "import os\nos.system('echo hi')"})
     assert resp.status_code == 400
     assert "安全检查" in resp.json()["detail"]
 
 
 def test_sandbox_blocks_open():
-    ds_id = test_upload_and_summary()
+    ds_id = upload_dataset()["id"]
     resp = client.post("/api/plots/run", json={"dataset_id": ds_id, "code": "open('C:/Windows/win.ini')"})
     assert resp.status_code == 400
 
@@ -95,3 +97,47 @@ def test_code_locator_labels():
     assert "设置标题" in labels
     assert "添加图例" in labels
     assert cards[0]["start"] == 1 and cards[0]["end"] == 1
+
+
+def test_preset_list_has_fallbacks():
+    resp = client.get("/api/presets")
+    assert resp.status_code == 200
+    presets = resp.json()["presets"]
+    ids = {preset["id"] for preset in presets}
+    assert {"default", "science", "science-nature", "science-ieee"}.issubset(ids)
+    assert all(preset["has_fallback"] for preset in presets)
+
+
+def test_generate_with_preset():
+    ds_id = upload_dataset()["id"]
+    resp = client.post(
+        "/api/plots/generate",
+        json={"dataset_id": ds_id, "instruction": "画一张 Nature 风格柱状图", "preset": "science-nature"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["preset"] == "science-nature"
+    assert data["run"]["success"], data["run"].get("stderr")
+
+
+def test_preset_fallback_without_local_repository(monkeypatch, tmp_path):
+    from app import preset_registry
+
+    monkeypatch.setattr(preset_registry, "PRESETS_ROOT", tmp_path / "no-cloned-presets")
+    ds_id = upload_dataset()["id"]
+    resp = client.post(
+        "/api/plots/generate",
+        json={"dataset_id": ds_id, "instruction": "画图", "preset": "science-nature"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["run"]["success"], resp.json()["run"].get("stderr")
+
+
+def test_unknown_preset_is_rejected():
+    ds_id = upload_dataset()["id"]
+    resp = client.post(
+        "/api/plots/generate",
+        json={"dataset_id": ds_id, "instruction": "画图", "preset": "not-a-real-preset"},
+    )
+    assert resp.status_code == 400
+    assert "未知预设" in resp.json()["detail"]

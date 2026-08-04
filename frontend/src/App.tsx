@@ -1,9 +1,11 @@
-import { useCallback, useRef, useState } from "react";
-import { editPlot, generatePlot, runCode, uploadDataset } from "./api";
-import type { ChatMessage, DatasetInfo, PlotResult, StatementCard } from "./types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { editPlot, generatePlot, listPresets, runCode, uploadDataset } from "./api";
+import type { ChatMessage, DatasetInfo, PlotResult, Preset, StatementCard } from "./types";
 
 export default function App() {
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [selectedPreset, setSelectedPreset] = useState("default");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [result, setResult] = useState<PlotResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -11,6 +13,11 @@ export default function App() {
   const [editorCode, setEditorCode] = useState("");
   const [activeCard, setActiveCard] = useState<StatementCard | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const selectedPresetInfo = presets.find((preset) => preset.id === selectedPreset);
+
+  useEffect(() => {
+    listPresets().then(setPresets).catch(() => setPresets([]));
+  }, []);
 
   const handleUpload = async (file: File) => {
     setBusy(true);
@@ -34,9 +41,10 @@ export default function App() {
     setBusy(true);
     try {
       const res = result
-        ? await editPlot(dataset.id, result.code, text)
-        : await generatePlot(dataset.id, text);
+        ? await editPlot(dataset.id, result.code, text, selectedPreset)
+        : await generatePlot(dataset.id, text, selectedPreset);
       setResult(res);
+      setSelectedPreset(res.preset || selectedPreset);
       setEditorCode(res.code);
       setMessages((m) => [
         ...m,
@@ -49,14 +57,15 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [input, dataset, busy, result]);
+  }, [input, dataset, busy, result, selectedPreset]);
 
   const runEditor = async () => {
     if (!dataset) return;
     setBusy(true);
     try {
-      const res = await runCode(dataset.id, editorCode);
+      const res = await runCode(dataset.id, editorCode, selectedPreset);
       setResult(res);
+      setSelectedPreset(res.preset || selectedPreset);
       setMessages((m) => [
         ...m,
         res.run.success
@@ -90,6 +99,34 @@ export default function App() {
       <main className="layout">
         <section className="panel left">
           <h2>数据</h2>
+          <div className="preset-picker">
+            <label htmlFor="preset-select">图表风格</label>
+            <select
+              id="preset-select"
+              value={selectedPreset}
+              onChange={(e) => setSelectedPreset(e.target.value)}
+              disabled={busy}
+            >
+              {presets.length === 0 ? (
+                <option value="default">默认</option>
+              ) : (
+                presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name}
+                  </option>
+                ))
+              )}
+            </select>
+            {selectedPresetInfo && (
+              <>
+                <p className="preset-description">{selectedPresetInfo.description}</p>
+                <p className="preset-source">
+                  {selectedPresetInfo.local_available ? "● 本地预设已启用" : "○ 使用内置兜底"}
+                  {selectedPresetInfo.source && ` · ${selectedPresetInfo.source}`}
+                </p>
+              </>
+            )}
+          </div>
           {!dataset ? (
             <p className="hint">点击右上角"导入数据"，支持 CSV / TSV / Excel / JSON。</p>
           ) : (

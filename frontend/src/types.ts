@@ -41,8 +41,20 @@ export interface PlotRun {
 
 export interface PlotResult {
   code: string;
+  preset: string;
   statements: StatementCard[];
   run: PlotRun;
+}
+
+export interface Preset {
+  id: string;
+  name: string;
+  description: string;
+  source: string;
+  source_url: string;
+  category: string;
+  local_available: boolean;
+  has_fallback: boolean;
 }
 
 export interface ChatMessage {

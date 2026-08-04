@@ -12,7 +12,7 @@
 - **沙箱执行**：LLM 生成的代码在受限子进程中执行，白名单 import、超时限制，产出 PNG/SVG
 - **多轮对话调整**：改颜色、改轴、加误差棒……自然语言即可，只改相关代码
 - **代码定位面板**：生成代码被拆成带中文解释的片段卡，点卡片直接编辑对应语句，不需要看懂整段代码
-- **风格预设（规划中）**：内置 Nature / Science / IEEE 等风格包，可导入代码由 AI 归纳为新预设
+- **风格预设**：可选默认、SciencePlots、Nature、IEEE、色盲友好、LovelyPlots、tueplots 等预设；本地有第三方仓库时自动使用，没有时使用内置兜底
 - **版本历史（规划中）**：每次生成可回退，导出期刊尺寸 PNG/SVG/PDF
 
 ## 快速开始
@@ -46,12 +46,15 @@ npm run dev
 
 打开 http://localhost:5173 ，上传数据文件 → 描述想要画的图 → 查看结果。
 
+预设仓库是可选的本地资源。若已经按调研计划克隆了 `presets/SciencePlots` 等仓库，启动后会自动发现；全新 GitHub 克隆没有这些目录时，预设仍可通过内置样式运行。
+
 ## API 概览
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/datasets` | 上传数据文件，返回数据集 id 与摘要 |
 | GET | `/api/datasets/{id}` | 获取数据集摘要与预览 |
+| GET | `/api/presets` | 获取风格预设及本地资源状态 |
 | POST | `/api/plots/generate` | 依据指令 + 数据摘要生成并执行绘图代码 |
 | POST | `/api/plots/edit` | 在已有代码上按指令修改并重新执行 |
 | POST | `/api/plots/run` | 直接执行一段代码（编辑预览用） |
@@ -65,6 +68,7 @@ npm run dev
 │       ├── config.py      # 环境配置
 │       ├── data_loader.py # 数据导入与摘要
 │       ├── llm.py         # LLM 调用与提示词
+│       ├── preset_registry.py # 风格预设注册与本地资源发现
 │       ├── sandbox.py     # 沙箱执行绘图代码
 │       └── code_locator.py# AST 代码片段定位与解释
 ├── frontend/          # React + Vite + TypeScript 前端
@@ -83,7 +87,7 @@ LLM 会生成并执行任意 Python 代码。当前沙箱为"白名单 import + 
 
 - [x] M0 调研：生态扫描与预设仓库收集
 - [x] M1 最小闭环：数据导入 → LLM 生成 → 沙箱渲染 → 对话调整
-- [ ] M2 预设系统：风格包接入与选择、导入代码生成预设
+- [x] M2 预设系统：风格包接入与选择、第三方风格缺失时内置兜底
 - [ ] M3 代码定位增强：参数表单化、错误自修复
 - [ ] M4 版本历史、期刊尺寸导出、交互图支持
 
