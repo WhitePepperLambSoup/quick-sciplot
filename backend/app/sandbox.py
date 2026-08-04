@@ -157,8 +157,19 @@ if _fallback_rc_params:
 """
     epilogue = """
 import os as _os
+import sys as _sys
 _fig = plt.gcf()
-_fig.savefig(_os.environ["OUTPUT_PATH"], dpi=300, bbox_inches="tight")
+_fig.savefig(_os.environ["OUTPUT_PNG"], dpi=300, bbox_inches="tight")
+for _format in ("svg", "pdf"):
+    try:
+        _fig.savefig(
+            _os.environ["OUTPUT_" + _format.upper()],
+            format=_format,
+            dpi=300,
+            bbox_inches="tight",
+        )
+    except Exception as _exc:
+        print(f"export {_format} failed: {_exc}", file=_sys.stderr)
 plt.close("all")
 """
     return preamble + user_code + epilogue
@@ -168,12 +179,14 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
     validate_script(code)
     preset_registry.get_preset(preset_id)
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / "out.png"
-    out_path.unlink(missing_ok=True)
+    output_paths = {format_name: output_dir / f"out.{format_name}" for format_name in ("png", "svg", "pdf")}
+    for path in output_paths.values():
+        path.unlink(missing_ok=True)
 
     env = os.environ.copy()
     env["MPLBACKEND"] = "Agg"
-    env["OUTPUT_PATH"] = str(out_path)
+    env["OUTPUT_PATH"] = str(output_paths["png"])
+    env.update({f"OUTPUT_{format_name.upper()}": str(path) for format_name, path in output_paths.items()})
     env["PYTHONDONTWRITEBYTECODE"] = "1"
 
     proc = subprocess.run(
@@ -186,11 +199,13 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
 
+    out_path = output_paths["png"]
     result = {
         "success": proc.returncode == 0 and out_path.exists(),
         "returncode": proc.returncode,
         "stdout": (proc.stdout or "")[-4000:],
         "stderr": (proc.stderr or "")[-4000:],
+        "formats": [format_name for format_name, path in output_paths.items() if path.exists()],
     }
     if result["success"]:
         result["image"] = _to_data_url(out_path)

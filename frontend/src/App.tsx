@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { applyParameter, editPlot, generatePlot, listPresets, runCode, uploadDataset } from "./api";
-import type { ChatMessage, CodeParameter, DatasetInfo, PlotResult, Preset, StatementCard } from "./types";
+import {
+  applyParameter,
+  editPlot,
+  generatePlot,
+  listHistory,
+  listPresets,
+  restoreRevision,
+  runCode,
+  uploadDataset,
+} from "./api";
+import type { ChatMessage, CodeParameter, DatasetInfo, PlotResult, Preset, RevisionSummary, StatementCard } from "./types";
 
 interface ParameterInputProps {
   parameter: CodeParameter;
@@ -41,10 +50,19 @@ function ParameterInput({ parameter, disabled, onApply }: ParameterInputProps) {
   );
 }
 
+const OPERATION_LABELS: Record<string, string> = {
+  generate: "生成",
+  edit: "对话调整",
+  parameter: "参数调整",
+  run: "代码运行",
+  restore: "恢复版本",
+};
+
 export default function App() {
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [selectedPreset, setSelectedPreset] = useState("default");
+  const [history, setHistory] = useState<RevisionSummary[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [result, setResult] = useState<PlotResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -57,6 +75,23 @@ export default function App() {
   useEffect(() => {
     listPresets().then(setPresets).catch(() => setPresets([]));
   }, []);
+
+  useEffect(() => {
+    const datasetId = dataset?.id;
+    if (!datasetId) {
+      setHistory([]);
+      return;
+    }
+    listHistory(datasetId).then(setHistory).catch(() => setHistory([]));
+  }, [dataset?.id]);
+
+  const refreshHistory = async (datasetId: string) => {
+    try {
+      setHistory(await listHistory(datasetId));
+    } catch {
+      // 历史记录不是绘图主流程的阻塞条件。
+    }
+  };
 
   const handleUpload = async (file: File) => {
     setBusy(true);
@@ -85,6 +120,7 @@ export default function App() {
       setResult(res);
       setSelectedPreset(res.preset || selectedPreset);
       setEditorCode(res.code);
+      void refreshHistory(dataset.id);
       setMessages((m) => [
         ...m,
         res.run.success
@@ -105,6 +141,8 @@ export default function App() {
       const res = await runCode(dataset.id, editorCode, selectedPreset);
       setResult(res);
       setSelectedPreset(res.preset || selectedPreset);
+      setEditorCode(res.code);
+      void refreshHistory(dataset.id);
       setMessages((m) => [
         ...m,
         res.run.success
@@ -126,10 +164,29 @@ export default function App() {
       setResult(res);
       setSelectedPreset(res.preset || selectedPreset);
       setEditorCode(res.code);
+      void refreshHistory(dataset.id);
       setActiveCard(
         res.statements.find((statement) => statement.start <= parameter.start_line && statement.end >= parameter.start_line) ?? null,
       );
       setMessages((m) => [...m, { role: "assistant", content: `已应用“${parameter.label}”并重新渲染 ✓` }]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restore = async (revision: RevisionSummary) => {
+    if (!dataset || busy || !revision.success) return;
+    setBusy(true);
+    try {
+      const res = await restoreRevision(revision.id);
+      setResult(res);
+      setSelectedPreset(res.preset || selectedPreset);
+      setEditorCode(res.code);
+      setActiveCard(null);
+      await refreshHistory(dataset.id);
+      setMessages((m) => [...m, { role: "assistant", content: "已恢复历史版本并生成新版本 ✓" }]);
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
     } finally {
@@ -215,8 +272,35 @@ export default function App() {
                 </tbody>
               </table>
             </>
+           )}
+          {dataset && (
+            <div className="history-section">
+              <div className="history-heading">
+                <span>版本历史</span>
+                <span className="history-count">{history.length}</span>
+              </div>
+              {history.length === 0 ? (
+                <p className="hint">生成第一张图后会自动记录版本。</p>
+              ) : (
+                <div className="history-list">
+                  {history.slice(0, 12).map((revision) => (
+                    <button
+                      key={revision.id}
+                      className={`history-item${revision.id === result?.revision_id ? " active" : ""}`}
+                      disabled={busy || !revision.success}
+                      onClick={() => void restore(revision)}
+                      title={revision.success ? "恢复该版本" : "失败版本不可恢复"}
+                    >
+                      <span>{OPERATION_LABELS[revision.operation] || revision.operation}</span>
+                      <span>{revision.preset}</span>
+                      <small>{revision.created_at}</small>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
-        </section>
+         </section>
 
         <section className="panel center">
           <h2>预览</h2>
@@ -226,6 +310,23 @@ export default function App() {
             <p className="hint">在右侧描述要画的图，结果会显示在这里。</p>
           )}
           {result && !result.run.success && <pre className="error">{result.run.stderr}</pre>}
+          {result?.run.success && result.revision_id && (
+            <div className="export-actions">
+              <span>导出：</span>
+              {(["png", "svg", "pdf"] as const)
+                .filter((format) => result.export_formats.includes(format))
+                .map((format) => (
+                  <a
+                    key={format}
+                    className="export-link"
+                    href={`/api/plots/revisions/${result.revision_id}/export/${format}`}
+                    download
+                  >
+                    {format.toUpperCase()}
+                  </a>
+                ))}
+            </div>
+          )}
         </section>
 
         <section className="panel right">

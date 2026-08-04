@@ -13,7 +13,7 @@
 - **多轮对话调整**：改颜色、改轴、加误差棒……自然语言即可，只改相关代码
 - **代码定位工作台**：完整代码行号高亮、语句解释、颜色/透明度/线宽/标题等参数表单，点击参数即可应用并重绘
 - **风格预设**：可选默认、SciencePlots、Nature、IEEE、色盲友好、LovelyPlots、tueplots 等预设；本地有第三方仓库时自动使用，没有时使用内置兜底
-- **版本历史（规划中）**：每次生成可回退，导出期刊尺寸 PNG/SVG/PDF
+- **版本历史与导出**：SQLite 保存每次生成/编辑/参数调整，可恢复任意成功版本；支持 PNG/SVG/PDF 下载
 
 ## 快速开始
 
@@ -59,6 +59,9 @@ npm run dev
 | POST | `/api/plots/edit` | 在已有代码上按指令修改并重新执行 |
 | POST | `/api/plots/run` | 直接执行一段代码（编辑预览用） |
 | POST | `/api/plots/parameter` | 修改定位到的一个参数并重新执行 |
+| GET | `/api/plots/history/{dataset_id}` | 获取数据集的版本历史 |
+| POST | `/api/plots/history/{revision_id}/restore` | 恢复版本并创建新版本 |
+| GET | `/api/plots/revisions/{revision_id}/export/{format}` | 下载 PNG/SVG/PDF |
 
 ## 目录结构
 
@@ -67,6 +70,7 @@ npm run dev
 │   └── app/
 │       ├── main.py        # 应用入口与路由
 │       ├── config.py      # 环境配置
+│       ├── database.py     # SQLite 数据集与版本历史
 │       ├── data_loader.py # 数据导入与摘要
 │       ├── llm.py         # LLM 调用与提示词
 │       ├── preset_registry.py # 风格预设注册与本地资源发现
@@ -90,7 +94,8 @@ LLM 会生成并执行任意 Python 代码。当前沙箱为"白名单 import + 
 - [x] M1 最小闭环：数据导入 → LLM 生成 → 沙箱渲染 → 对话调整
 - [x] M2 预设系统：风格包接入与选择、第三方风格缺失时内置兜底
 - [x] M3 代码定位增强：完整代码行高亮、参数表单化、直接编辑与重绘
-- [ ] M4 版本历史、期刊尺寸导出、交互图支持
+- [x] M4a 版本历史、版本恢复、PNG/SVG/PDF 导出
+- [ ] M4b Plotly 交互图支持、错误自修复循环
 
 ## 许可证
 

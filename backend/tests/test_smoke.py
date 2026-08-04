@@ -149,6 +149,32 @@ ax.set_title('test')
     assert data["run"]["success"], data["run"].get("stderr")
 
 
+def test_history_restore_and_export():
+    ds_id = upload_dataset()["id"]
+    generated = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画柱状图"})
+    assert generated.status_code == 200, generated.text
+    first = generated.json()
+    assert first["revision_id"]
+    assert {"png", "svg", "pdf"}.issubset(set(first["export_formats"]))
+
+    history = client.get(f"/api/plots/history/{ds_id}")
+    assert history.status_code == 200
+    revisions = history.json()["revisions"]
+    assert revisions[0]["id"] == first["revision_id"]
+    assert revisions[0]["operation"] == "generate"
+
+    for format_name in ("png", "svg", "pdf"):
+        exported = client.get(f"/api/plots/revisions/{first['revision_id']}/export/{format_name}")
+        assert exported.status_code == 200, exported.text
+        assert len(exported.content) > 100
+
+    restored = client.post(f"/api/plots/history/{first['revision_id']}/restore")
+    assert restored.status_code == 200, restored.text
+    restored_data = restored.json()
+    assert restored_data["revision_id"] != first["revision_id"]
+    assert restored_data["run"]["success"]
+
+
 def test_preset_list_has_fallbacks():
     resp = client.get("/api/presets")
     assert resp.status_code == 200

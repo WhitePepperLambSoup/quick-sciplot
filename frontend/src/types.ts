@@ -49,6 +49,7 @@ export interface PlotRun {
   returncode: number;
   stdout: string;
   stderr: string;
+  formats: string[];
   image?: string;
   size_bytes?: number;
 }
@@ -56,8 +57,19 @@ export interface PlotRun {
 export interface PlotResult {
   code: string;
   preset: string;
+  revision_id: string;
+  export_formats: string[];
   statements: StatementCard[];
   run: PlotRun;
+}
+
+export interface RevisionSummary {
+  id: string;
+  dataset_id: string;
+  preset: string;
+  operation: string;
+  success: boolean;
+  created_at: string;
 }
 
 export interface Preset {

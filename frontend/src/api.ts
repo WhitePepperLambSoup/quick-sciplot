@@ -1,4 +1,4 @@
-import type { CodeParameter, DatasetInfo, PlotResult, Preset } from "./types";
+import type { CodeParameter, DatasetInfo, PlotResult, Preset, RevisionSummary } from "./types";
 
 const BASE = "/api";
 
@@ -58,4 +58,13 @@ export async function applyParameter(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ dataset_id: datasetId, code, parameter, value, preset }),
   });
+}
+
+export async function listHistory(datasetId: string): Promise<RevisionSummary[]> {
+  const data = await request<{ revisions: RevisionSummary[] }>(`/plots/history/${datasetId}`);
+  return data.revisions;
+}
+
+export async function restoreRevision(revisionId: string): Promise<PlotResult> {
+  return request<PlotResult>(`/plots/history/${revisionId}/restore`, { method: "POST" });
 }
