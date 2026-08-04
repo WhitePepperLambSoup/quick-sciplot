@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_model: str = "deepseek-chat"
     llm_mock: bool = False
+    auto_repair_attempts: int = 1
 
     # 服务
     host: str = "127.0.0.1"
@@ -41,6 +42,7 @@ class Settings(BaseSettings):
         "statistics",
         "datetime",
         "random",
+        "plotly",
     )
 
     def ensure_dirs(self) -> None:

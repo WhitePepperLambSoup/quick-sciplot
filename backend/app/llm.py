@@ -11,8 +11,8 @@ SYSTEM_PROMPT = """你是一名科研绘图助手。根据用户需求和数据�
 硬性要求：
 1. 只输出代码本身，不要 markdown 围栏、不要解释文字。
 2. 数据已经加载到变量 `df`（pandas.DataFrame），直接使用，不要再读取文件。
-3. 只允许导入白名单库：matplotlib、numpy、pandas、seaborn、scipy、statsmodels、math、statistics、random。
-4. 使用 matplotlib（Agg 后端已自动设置），不要调用 plt.show() 和 plt.savefig()（由系统自动保存）。
+3. 只允许导入白名单库：matplotlib、numpy、pandas、seaborn、scipy、statsmodels、plotly、math、statistics、random。
+4. 静态图使用 matplotlib（Agg 后端已自动设置）；若用户明确要求交互图，使用 plotly.express 或 plotly.graph_objects，并把图对象赋值给变量 `fig`。不要调用 show、savefig、write_html（由系统自动保存）。
 5. 中文文本标签请在代码内设置 matplotlib 中文字体（例如 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']），并加 plt.rcParams['axes.unicode_minus'] = False。
 6. 代码必须健壮：对缺失值做处理，避免运行时错误。
 7. 一个完整绘图（可有多个子图），图要美观、适合期刊发表。
@@ -91,11 +91,31 @@ def edit_plot_code(code: str, instruction: str, summary: dict, preset: str | Non
     return edited
 
 
+def repair_plot_code(code: str, error: str, summary: dict, preset: str | None = None) -> str:
+    user_msg = (
+        "请自动修复下面的科研绘图代码。只输出修复后的完整 Python 代码，不要解释。\n"
+        f"运行错误：\n{error[-4000:]}\n\n"
+        f"当前代码：\n```python\n{code}\n```\n\n"
+        f"数据摘要：\n{json.dumps(summary, ensure_ascii=False)[:3000]}\n"
+        f"当前风格预设：{preset or 'default'}（执行器会自动应用）"
+    )
+    repaired = _extract_code(_call_chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
+    if not repaired.strip():
+        raise LLMError("自动修复返回了空代码")
+    return repaired
+
+
 # ---------------- mock 模式（无 API key 演示） ----------------
 
 def _mock_reply(messages: list[dict]) -> str:
     user_text = messages[-1]["content"] if messages else ""
     low = user_text.lower()
+    if "自动修复" in user_text or "修复" in user_text:
+        if "plotly" in low or "交互" in user_text:
+            return _MOCK_INTERACTIVE
+        return _MOCK_BAR
+    if "interactive" in low or "交互" in user_text:
+        return _MOCK_INTERACTIVE
     if "hist" in low or "直方" in user_text:
         return _MOCK_HIST
     if "scatter" in low or "散点" in user_text:
@@ -177,4 +197,15 @@ sns.boxplot(data=df[num_cols[:5]], ax=ax)
 ax.set_title("箱线图")
 ax.tick_params(axis="x", rotation=30)
 fig.tight_layout()
+"""
+
+_MOCK_INTERACTIVE = """import plotly.express as px
+
+num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+if len(num_cols) < 2:
+    raise ValueError("交互散点图至少需要两列数值列")
+x_col, y_col = num_cols[:2]
+color_col = df.columns[0] if df.columns[0] not in num_cols else None
+fig = px.scatter(df, x=x_col, y=y_col, color=color_col, title="交互式散点图")
+fig.update_layout(template="plotly_white")
 """

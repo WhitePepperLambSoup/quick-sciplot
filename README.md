@@ -14,6 +14,7 @@
 - **代码定位工作台**：完整代码行号高亮、语句解释、颜色/透明度/线宽/标题等参数表单，点击参数即可应用并重绘
 - **风格预设**：可选默认、SciencePlots、Nature、IEEE、色盲友好、LovelyPlots、tueplots 等预设；本地有第三方仓库时自动使用，没有时使用内置兜底
 - **版本历史与导出**：SQLite 保存每次生成/编辑/参数调整，可恢复任意成功版本；支持 PNG/SVG/PDF 下载
+- **交互图与自动修复**：明确要求交互图时使用 Plotly，浏览器按需加载交互引擎；生成代码运行失败时自动请求 LLM 修复一次
 
 ## 快速开始
 
@@ -61,7 +62,7 @@ npm run dev
 | POST | `/api/plots/parameter` | 修改定位到的一个参数并重新执行 |
 | GET | `/api/plots/history/{dataset_id}` | 获取数据集的版本历史 |
 | POST | `/api/plots/history/{revision_id}/restore` | 恢复版本并创建新版本 |
-| GET | `/api/plots/revisions/{revision_id}/export/{format}` | 下载 PNG/SVG/PDF |
+| GET | `/api/plots/revisions/{revision_id}/export/{format}` | 下载 PNG/SVG/PDF/Plotly JSON |
 
 ## 目录结构
 
@@ -95,7 +96,8 @@ LLM 会生成并执行任意 Python 代码。当前沙箱为"白名单 import + 
 - [x] M2 预设系统：风格包接入与选择、第三方风格缺失时内置兜底
 - [x] M3 代码定位增强：完整代码行高亮、参数表单化、直接编辑与重绘
 - [x] M4a 版本历史、版本恢复、PNG/SVG/PDF 导出
-- [ ] M4b Plotly 交互图支持、错误自修复循环
+- [x] M4b Plotly 交互图支持、一次错误自动修复
+- [ ] M5 评测集、真实 LLM 质量基准、Docker 强隔离
 
 ## 许可证
 

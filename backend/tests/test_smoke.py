@@ -175,6 +175,36 @@ def test_history_restore_and_export():
     assert restored_data["run"]["success"]
 
 
+def test_interactive_plotly_render_and_export():
+    ds_id = upload_dataset()["id"]
+    code = """import plotly.express as px
+fig = px.scatter(df, x='revenue', y='users', color='group', title='interactive')
+fig.update_layout(template='plotly_white')
+"""
+    resp = client.post("/api/plots/run", json={"dataset_id": ds_id, "code": code})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["run"]["success"]
+    assert data["run"]["interactive"]["data"]
+    assert "plotly" in data["export_formats"]
+
+    exported = client.get(f"/api/plots/revisions/{data['revision_id']}/export/plotly")
+    assert exported.status_code == 200
+    assert b"revenue" in exported.content
+
+
+def test_generation_auto_repairs_runtime_error(monkeypatch):
+    from app import llm
+
+    ds_id = upload_dataset()["id"]
+    monkeypatch.setattr(llm, "generate_plot_code", lambda *args, **kwargs: "raise ValueError('intentional test error')")
+    resp = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画柱状图"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["repair_attempts"] == 1
+    assert data["run"]["success"], data["run"].get("stderr")
+
+
 def test_preset_list_has_fallbacks():
     resp = client.get("/api/presets")
     assert resp.status_code == 200

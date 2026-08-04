@@ -149,8 +149,8 @@ def restore_plot_revision(revision_id: str):
 
 @app.get("/api/plots/revisions/{revision_id}/export/{format_name}", summary="导出绘图文件")
 def export_plot_revision(revision_id: str, format_name: str):
-    if format_name not in {"png", "svg", "pdf"}:
-        raise HTTPException(status_code=400, detail="只支持 png、svg、pdf")
+    if format_name not in {"png", "svg", "pdf", "plotly"}:
+        raise HTTPException(status_code=400, detail="只支持 png、svg、pdf、plotly")
     revision = database.get_revision(revision_id)
     if revision is None or not revision["success"]:
         raise HTTPException(status_code=404, detail="可导出的绘图版本不存在")
@@ -162,14 +162,21 @@ def export_plot_revision(revision_id: str, format_name: str):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="导出文件不存在") from exc
 
-    file_path = (output_dir / f"out.{format_name}").resolve()
+    extensions = {"png": "png", "svg": "svg", "pdf": "pdf", "plotly": "plotly.json"}
+    file_path = (output_dir / f"out.{extensions[format_name]}").resolve()
     if file_path.parent != output_dir or not file_path.is_file():
         raise HTTPException(status_code=404, detail="该版本没有此格式的导出文件")
-    media_types = {"png": "image/png", "svg": "image/svg+xml", "pdf": "application/pdf"}
+    media_types = {
+        "png": "image/png",
+        "svg": "image/svg+xml",
+        "pdf": "application/pdf",
+        "plotly": "application/json",
+    }
+    filename_extensions = {"png": "png", "svg": "svg", "pdf": "pdf", "plotly": "plotly.json"}
     return FileResponse(
         file_path,
         media_type=media_types[format_name],
-        filename=f"quick-sciplot-{revision_id[:8]}.{format_name}",
+        filename=f"quick-sciplot-{revision_id[:8]}.{filename_extensions[format_name]}",
     )
 
 
@@ -188,6 +195,38 @@ def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", opera
         raise HTTPException(status_code=400, detail=f"代码未通过安全检查: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=408, detail=f"执行超时（>{settings.sandbox_timeout}s）") from exc
+    repair_attempts = 0
+    repair_error = ""
+    if not result["success"] and operation != "run":
+        while repair_attempts < max(0, settings.auto_repair_attempts):
+            try:
+                code = llm.repair_plot_code(code, result.get("stderr", ""), ds["summary"], preset_id)
+            except llm.LLMError as exc:
+                repair_error = str(exc)
+                break
+            repair_attempts += 1
+            try:
+                result = sandbox.run_plot_code(code, Path(ds["path"]), out_dir, preset_id)
+            except sandbox.SandboxError as exc:
+                result = {
+                    "success": False,
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": f"自动修复后的代码未通过安全检查: {exc}",
+                    "formats": [],
+                }
+            except subprocess.TimeoutExpired:
+                result = {
+                    "success": False,
+                    "returncode": -1,
+                    "stdout": "",
+                    "stderr": f"自动修复后的代码执行超时（>{settings.sandbox_timeout}s）",
+                    "formats": [],
+                }
+            if result["success"]:
+                break
+    if repair_error:
+        result["repair_error"] = repair_error
     revision_id = database.create_revision(
         dataset_id=ds["id"],
         code=code,
@@ -202,6 +241,7 @@ def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", opera
         "preset": preset_id,
         "revision_id": revision_id,
         "export_formats": result.get("formats", []),
+        "repair_attempts": repair_attempts,
         "statements": code_locator.split_statements(code),
         "run": result,
     }

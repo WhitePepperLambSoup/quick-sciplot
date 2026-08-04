@@ -9,6 +9,7 @@
 
 import ast
 import base64
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from . import preset_registry
 
 FORBIDDEN_NAMES = {"eval", "exec", "compile", "open", "input", "breakpoint", "globals", "locals", "vars", "getattr", "setattr", "delattr"}
 FORBIDDEN_ATTRS = {"os.system", "os.popen", "os.remove", "os.unlink", "os.rmdir", "shutil", "subprocess", "socket", "requests", "urllib", "pathlib.Path.open", "Path.open"}
+MAX_INTERACTIVE_BYTES = 15 * 1024 * 1024
 
 FALLBACK_RC_PARAMS = {
     "default": {},
@@ -158,18 +160,26 @@ if _fallback_rc_params:
     epilogue = """
 import os as _os
 import sys as _sys
-_fig = plt.gcf()
-_fig.savefig(_os.environ["OUTPUT_PNG"], dpi=300, bbox_inches="tight")
-for _format in ("svg", "pdf"):
+_interactive_fig = globals().get("fig")
+if _interactive_fig is not None and hasattr(_interactive_fig, "to_plotly_json"):
     try:
-        _fig.savefig(
-            _os.environ["OUTPUT_" + _format.upper()],
-            format=_format,
-            dpi=300,
-            bbox_inches="tight",
-        )
+        import plotly.io as _pio
+        _pio.write_json(_interactive_fig, _os.environ["OUTPUT_PLOTLY"], pretty=False)
     except Exception as _exc:
-        print(f"export {_format} failed: {_exc}", file=_sys.stderr)
+        print(f"export plotly failed: {_exc}", file=_sys.stderr)
+else:
+    _fig = plt.gcf()
+    _fig.savefig(_os.environ["OUTPUT_PNG"], dpi=300, bbox_inches="tight")
+    for _format in ("svg", "pdf"):
+        try:
+            _fig.savefig(
+                _os.environ["OUTPUT_" + _format.upper()],
+                format=_format,
+                dpi=300,
+                bbox_inches="tight",
+            )
+        except Exception as _exc:
+            print(f"export {_format} failed: {_exc}", file=_sys.stderr)
 plt.close("all")
 """
     return preamble + user_code + epilogue
@@ -179,7 +189,8 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
     validate_script(code)
     preset_registry.get_preset(preset_id)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_paths = {format_name: output_dir / f"out.{format_name}" for format_name in ("png", "svg", "pdf")}
+    extensions = {"png": "png", "svg": "svg", "pdf": "pdf", "plotly": "plotly.json"}
+    output_paths = {format_name: output_dir / f"out.{extension}" for format_name, extension in extensions.items()}
     for path in output_paths.values():
         path.unlink(missing_ok=True)
 
@@ -201,15 +212,22 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
 
     out_path = output_paths["png"]
     result = {
-        "success": proc.returncode == 0 and out_path.exists(),
+        "success": proc.returncode == 0 and any(path.exists() for path in output_paths.values()),
         "returncode": proc.returncode,
         "stdout": (proc.stdout or "")[-4000:],
         "stderr": (proc.stderr or "")[-4000:],
         "formats": [format_name for format_name, path in output_paths.items() if path.exists()],
     }
     if result["success"]:
-        result["image"] = _to_data_url(out_path)
-        result["size_bytes"] = out_path.stat().st_size
+        if out_path.exists():
+            result["image"] = _to_data_url(out_path)
+            result["size_bytes"] = out_path.stat().st_size
+        interactive_path = output_paths["plotly"]
+        if interactive_path.exists() and interactive_path.stat().st_size <= MAX_INTERACTIVE_BYTES:
+            try:
+                result["interactive"] = json.loads(interactive_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                result["stderr"] += f"\n读取交互图失败: {exc}"
     return result
 
 

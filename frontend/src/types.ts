@@ -50,8 +50,15 @@ export interface PlotRun {
   stdout: string;
   stderr: string;
   formats: string[];
+  interactive?: PlotlyFigure;
   image?: string;
   size_bytes?: number;
+}
+
+export interface PlotlyFigure {
+  data: unknown[];
+  layout?: Record<string, unknown>;
+  frames?: unknown[];
 }
 
 export interface PlotResult {
@@ -59,6 +66,7 @@ export interface PlotResult {
   preset: string;
   revision_id: string;
   export_formats: string[];
+  repair_attempts: number;
   statements: StatementCard[];
   run: PlotRun;
 }

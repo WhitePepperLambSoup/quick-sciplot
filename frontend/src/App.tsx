@@ -9,7 +9,7 @@ import {
   runCode,
   uploadDataset,
 } from "./api";
-import type { ChatMessage, CodeParameter, DatasetInfo, PlotResult, Preset, RevisionSummary, StatementCard } from "./types";
+import type { ChatMessage, CodeParameter, DatasetInfo, PlotResult, PlotlyFigure, Preset, RevisionSummary, StatementCard } from "./types";
 
 interface ParameterInputProps {
   parameter: CodeParameter;
@@ -48,6 +48,29 @@ function ParameterInput({ parameter, disabled, onApply }: ParameterInputProps) {
       />
     </label>
   );
+}
+
+function InteractivePlot({ figure }: { figure: PlotlyFigure }) {
+  const plotRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const element = plotRef.current;
+    if (!element) return;
+    let disposed = false;
+    void import("plotly.js-dist-min").then(({ default: Plotly }) => {
+      if (disposed) return;
+      void Plotly.newPlot(element, figure.data, figure.layout || {}, {
+        responsive: true,
+        displaylogo: false,
+      });
+    });
+    return () => {
+      disposed = true;
+      void import("plotly.js-dist-min").then(({ default: Plotly }) => Plotly.purge(element));
+    };
+  }, [figure]);
+
+  return <div ref={plotRef} className="interactive-plot" aria-label="交互式 Plotly 图表" />;
 }
 
 const OPERATION_LABELS: Record<string, string> = {
@@ -124,7 +147,7 @@ export default function App() {
       setMessages((m) => [
         ...m,
         res.run.success
-          ? { role: "assistant", content: "图已生成 ✓" }
+          ? { role: "assistant", content: res.repair_attempts ? `图已生成，自动修复 ${res.repair_attempts} 次 ✓` : "图已生成 ✓" }
           : { role: "assistant", content: "生成失败：" + (res.run.stderr || "无错误信息"), error: true },
       ]);
     } catch (e) {
@@ -304,7 +327,9 @@ export default function App() {
 
         <section className="panel center">
           <h2>预览</h2>
-          {result?.run.success && result.run.image ? (
+          {result?.run.success && result.run.interactive ? (
+            <InteractivePlot figure={result.run.interactive} />
+          ) : result?.run.success && result.run.image ? (
             <img className="plot-img" src={result.run.image} alt="生成的图表" />
           ) : (
             <p className="hint">在右侧描述要画的图，结果会显示在这里。</p>
@@ -313,7 +338,7 @@ export default function App() {
           {result?.run.success && result.revision_id && (
             <div className="export-actions">
               <span>导出：</span>
-              {(["png", "svg", "pdf"] as const)
+              {(["png", "svg", "pdf", "plotly"] as const)
                 .filter((format) => result.export_formats.includes(format))
                 .map((format) => (
                   <a
@@ -322,7 +347,7 @@ export default function App() {
                     href={`/api/plots/revisions/${result.revision_id}/export/${format}`}
                     download
                   >
-                    {format.toUpperCase()}
+                    {format === "plotly" ? "JSON" : format.toUpperCase()}
                   </a>
                 ))}
             </div>

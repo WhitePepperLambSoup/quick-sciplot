@@ -232,6 +232,13 @@ body {
   border: 1px solid #e3e6ee;
 }
 
+.interactive-plot {
+  width: 100%;
+  min-height: 420px;
+  border: 1px solid #e3e6ee;
+  border-radius: 6px;
+}
+
 .export-actions {
   display: flex;
   align-items: center;
