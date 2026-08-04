@@ -139,6 +139,7 @@ def _build_script(
     if not include_local_presets:
         runtime["scienceplots_src"] = None
     fallback = FALLBACK_RC_PARAMS[runtime["fallback"]]
+    data_path = csv_path.as_posix() if not include_local_presets else str(csv_path)
     preamble = f"""# -*- coding: utf-8 -*-
 import os
 import sys
@@ -155,7 +156,7 @@ if _scienceplots_src:
         pass
 
 import pandas as pd
-df = pd.read_csv({str(csv_path)!r})
+df = pd.read_csv({data_path!r})
 import matplotlib.pyplot as plt
 
 _selected_styles = {runtime["styles"]!r}
@@ -252,7 +253,8 @@ def _output_paths(output_dir: Path) -> dict[str, Path]:
 
 
 def _run_in_docker(code: str, csv_path: Path, output_dir: Path, preset_id: str | None) -> subprocess.CompletedProcess:
-    if shutil.which("docker") is None:
+    docker_binary = _find_docker()
+    if docker_binary is None:
         raise SandboxUnavailableError("未找到 Docker。请安装 Docker Desktop，或将 SANDBOX_MODE 改为 process")
 
     output_paths = _output_paths(output_dir)
@@ -263,7 +265,7 @@ def _run_in_docker(code: str, csv_path: Path, output_dir: Path, preset_id: str |
         **{f"OUTPUT_{format_name.upper()}": f"/workspace/output/{path.name}" for format_name, path in output_paths.items()},
     }
     command = [
-        "docker",
+        docker_binary,
         "run",
         "--rm",
         "--network",
@@ -308,6 +310,21 @@ def _run_in_docker(code: str, csv_path: Path, output_dir: Path, preset_id: str |
         timeout=settings.sandbox_timeout,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
+
+
+def _find_docker() -> str | None:
+    found = shutil.which("docker")
+    if found:
+        return found
+    if os.name == "nt":
+        candidates = [
+            Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "Docker" / "Docker" / "resources" / "bin" / "docker.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Docker" / "Docker" / "resources" / "bin" / "docker.exe",
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+    return None
 
 
 def _to_data_url(path: Path) -> str:

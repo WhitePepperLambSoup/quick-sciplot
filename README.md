@@ -16,6 +16,7 @@
 - **版本历史与导出**：SQLite 保存每次生成/编辑/参数调整，可恢复任意成功版本；支持 PNG/SVG/PDF 下载
 - **交互图与自动修复**：明确要求交互图时使用 Plotly，浏览器按需加载交互引擎；生成代码运行失败时自动请求 LLM 修复一次
 - **模型配置面板**：运行中切换 OpenAI 兼容 Base URL、模型、Mock 模式和自动修复次数；API Key 只保存到本地 `.env`
+- **桌面 GUI**：同一套 React WebUI 可直接浏览器运行，也可嵌入 Tauri 2 桌面窗口；桌面壳自动启动本地 FastAPI
 
 ## 快速开始
 
@@ -49,6 +50,23 @@ npm run dev
 ```
 
 打开 http://localhost:5173 ，上传数据文件 → 描述想要画的图 → 查看结果。
+
+### 3. 桌面 GUI（Tauri）
+
+开发模式会打开桌面窗口、启动 Vite，并由 Rust 桌面壳自动启动 `backend/.venv` 中的 FastAPI：
+
+```bash
+cd frontend
+npm run desktop:dev
+```
+
+构建 Windows 桌面可执行文件：
+
+```bash
+npm run desktop:build
+```
+
+当前桌面壳适合本地源码开发；面向没有 Python 环境的最终用户发布前，还需要把后端制作成 PyInstaller sidecar。
 
 预设仓库是可选的本地资源。若已经按调研计划克隆了 `presets/SciencePlots` 等仓库，启动后会自动发现；全新 GitHub 克隆没有这些目录时，预设仍可通过内置样式运行。
 
@@ -95,6 +113,7 @@ docker build -f Dockerfile.sandbox -t quick-sciplot-sandbox:latest .
 │       ├── sandbox.py     # 沙箱执行绘图代码
 │       └── code_locator.py# AST 代码片段、参数定位与安全替换
 ├── frontend/          # React + Vite + TypeScript 前端
+│   └── src-tauri/     # Tauri 2 桌面 GUI 外壳与本地 FastAPI 启动器
 ├── docs/EVALUATION.md  # 可重复绘图评测说明
 ├── presets/           # 本地克隆的风格预设仓库（不入库，见 README 下方说明）
 ├── references/        # 本地克隆的参考实现（不入库）
@@ -116,8 +135,10 @@ LLM 会生成并执行任意 Python 代码。当前 process 模式为"白名单 
 - [x] M4a 版本历史、版本恢复、PNG/SVG/PDF 导出
 - [x] M4b Plotly 交互图支持、一次错误自动修复
 - [x] M5a 模型配置面板、连接测试、可重复 mock/真实模型评测入口
-- [x] M5b 可选 Docker 强隔离执行器、评测结构指标与报告导出（需 Docker 环境验证）
+- [x] M5b 可选 Docker 强隔离执行器、评测结构指标与报告导出
 - [ ] M5c 多模型真实质量基准与人工评测流程
+- [x] M6 Tauri 桌面 GUI 外壳（源码模式）
+- [ ] M7 PyInstaller sidecar 与可分发安装包
 
 ## 许可证
 

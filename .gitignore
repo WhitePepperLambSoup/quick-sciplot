@@ -26,6 +26,8 @@ htmlcov/
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
 *.tsbuildinfo
 
 # --- 运行时产物 ---
@@ -38,6 +40,10 @@ reports/
 *.pdf
 !**/examples/**/*.png
 !**/assets/**/*.png
+!frontend/src-tauri/app-icon.svg
+!frontend/src-tauri/icons/**/*.png
+!frontend/src-tauri/icons/**/*.ico
+!frontend/src-tauri/icons/**/*.icns
 
 # --- IDE / OS ---
 .idea/
