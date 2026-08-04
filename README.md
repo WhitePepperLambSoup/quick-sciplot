@@ -53,20 +53,23 @@ npm run dev
 
 ### 3. 桌面 GUI（Tauri）
 
-开发模式会打开桌面窗口、启动 Vite，并由 Rust 桌面壳自动启动 `backend/.venv` 中的 FastAPI：
+开发模式会打开桌面窗口、启动 Vite，并由 Rust 桌面壳自动启动 `backend/.venv` 中的 FastAPI（开发机需要先安装后端依赖）：
 
 ```bash
 cd frontend
 npm run desktop:dev
 ```
 
-构建 Windows 桌面可执行文件：
+构建 Windows 桌面安装包时会自动运行 PyInstaller 生成 FastAPI sidecar，最终用户不需要安装 Python：
 
 ```bash
+cd ../backend
+pip install -r requirements-build.txt
+cd ../frontend
 npm run desktop:build
 ```
 
-当前桌面壳适合本地源码开发；面向没有 Python 环境的最终用户发布前，还需要把后端制作成 PyInstaller sidecar。
+产物位于 `frontend/src-tauri/target/release/bundle/`，包括 NSIS 和 MSI。PyInstaller 构建依赖可通过 `backend/requirements-build.txt` 安装。
 
 预设仓库是可选的本地资源。若已经按调研计划克隆了 `presets/SciencePlots` 等仓库，启动后会自动发现；全新 GitHub 克隆没有这些目录时，预设仍可通过内置样式运行。
 
@@ -138,7 +141,7 @@ LLM 会生成并执行任意 Python 代码。当前 process 模式为"白名单 
 - [x] M5b 可选 Docker 强隔离执行器、评测结构指标与报告导出
 - [ ] M5c 多模型真实质量基准与人工评测流程
 - [x] M6 Tauri 桌面 GUI 外壳（源码模式）
-- [ ] M7 PyInstaller sidecar 与可分发安装包
+- [x] M7 PyInstaller sidecar 与 Windows NSIS/MSI 安装包
 
 ## 许可证
 

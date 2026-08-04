@@ -1,16 +1,18 @@
 """环境配置：从 .env / 环境变量读取。"""
 
 import re
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+CONFIG_DIR = Path(os.environ.get("QUICK_SCIPLOT_CONFIG_DIR", str(BACKEND_DIR)))
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BACKEND_DIR / ".env",
+        env_file=CONFIG_DIR / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -106,7 +108,8 @@ def update_runtime_config(
 
 
 def _persist_env(updates: dict[str, str]) -> None:
-    env_path = BACKEND_DIR / ".env"
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    env_path = CONFIG_DIR / ".env"
     text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     lines = text.splitlines()
     for key, value in updates.items():

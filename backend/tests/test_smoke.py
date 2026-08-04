@@ -106,7 +106,7 @@ def test_docker_mode_reports_missing_runtime(monkeypatch, tmp_path):
     from app.config import settings
 
     monkeypatch.setattr(settings, "sandbox_mode", "docker")
-    monkeypatch.setattr(sandbox.shutil, "which", lambda name: None)
+    monkeypatch.setattr(sandbox, "_find_docker", lambda: None)
     with pytest.raises(sandbox.SandboxUnavailableError):
         sandbox.run_plot_code("pass", tmp_path / "data.csv", tmp_path / "output")
 
