@@ -39,6 +39,21 @@ def test_upload_and_summary():
     assert data["summary"]["columns"][1]["mean"] == 208.0
 
 
+def test_upload_multiple_datasets():
+    second = "time,value\n1,10\n2,20\n"
+    resp = client.post(
+        "/api/datasets",
+        files=[
+            ("files", ("first.csv", io.BytesIO(CSV.encode()), "text/csv")),
+            ("files", ("second.csv", io.BytesIO(second.encode()), "text/csv")),
+        ],
+    )
+    assert resp.status_code == 200, resp.text
+    datasets = resp.json()["datasets"]
+    assert len(datasets) == 2
+    assert [item["name"] for item in datasets] == ["first.csv", "second.csv"]
+
+
 def test_generate_bar():
     ds_id = upload_dataset()["id"]
     resp = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画柱状图，对比每年的 revenue"})
@@ -99,6 +114,23 @@ def test_config_status_and_mock_connection():
     assert connection.status_code == 200, connection.text
     assert connection.json()["ok"] is True
     assert connection.json()["mode"] == "mock"
+
+
+def test_llm_empty_response_retries(monkeypatch):
+    from app import llm
+
+    calls = {"count": 0}
+
+    def fake_call(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise llm.LLMEmptyResponseError("empty")
+        return "import matplotlib.pyplot as plt\nplt.plot([1, 2], [3, 4])"
+
+    monkeypatch.setattr(llm, "_call_chat", fake_call)
+    code = llm.generate_plot_code("画折线图", {"shape": {"rows": 2, "cols": 2}})
+    assert "plt.plot" in code
+    assert calls["count"] == 2
 
 
 def test_docker_mode_reports_missing_runtime(monkeypatch, tmp_path):

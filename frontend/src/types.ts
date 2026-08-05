@@ -19,6 +19,7 @@ export interface DataSummary {
 
 export interface DatasetInfo {
   id: string;
+  name?: string;
   summary: DataSummary;
 }
 

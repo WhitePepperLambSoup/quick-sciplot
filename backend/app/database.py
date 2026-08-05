@@ -26,6 +26,7 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS datasets (
                 id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
                 path TEXT NOT NULL,
                 summary_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -48,28 +49,37 @@ def init_db() -> None:
             ON revisions(dataset_id, created_at DESC, id DESC);
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(datasets)").fetchall()}
+        if "name" not in columns:
+            conn.execute("ALTER TABLE datasets ADD COLUMN name TEXT NOT NULL DEFAULT ''")
 
 
 def save_dataset(dataset: dict) -> None:
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO datasets(id, path, summary_json)
-            VALUES (?, ?, ?)
+            INSERT INTO datasets(id, name, path, summary_json)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
                 path = excluded.path,
                 summary_json = excluded.summary_json
             """,
-            (dataset["id"], dataset["path"], json.dumps(dataset["summary"], ensure_ascii=False)),
+            (
+                dataset["id"],
+                dataset.get("name", Path(dataset["path"]).stem),
+                dataset["path"],
+                json.dumps(dataset["summary"], ensure_ascii=False),
+            ),
         )
 
 
 def get_dataset(dataset_id: str) -> dict | None:
     with _connect() as conn:
-        row = conn.execute("SELECT id, path, summary_json FROM datasets WHERE id = ?", (dataset_id,)).fetchone()
+        row = conn.execute("SELECT id, name, path, summary_json FROM datasets WHERE id = ?", (dataset_id,)).fetchone()
     if row is None:
         return None
-    return {"id": row["id"], "path": row["path"], "summary": json.loads(row["summary_json"])}
+    return {"id": row["id"], "name": row["name"] or Path(row["path"]).stem, "path": row["path"], "summary": json.loads(row["summary_json"])}
 
 
 def create_revision(

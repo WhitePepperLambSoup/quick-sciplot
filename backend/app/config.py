@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_model: str = "deepseek-chat"
+    llm_max_tokens: int = 8192
     llm_mock: bool = False
     auto_repair_attempts: int = 1
     sandbox_mode: str = "process"

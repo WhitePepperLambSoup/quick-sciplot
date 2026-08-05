@@ -10,7 +10,7 @@ import {
   runCode,
   testLLMConnection,
   updateLLMConfig,
-  uploadDataset,
+  uploadDatasets,
 } from "./api";
 import type {
   ChatMessage,
@@ -237,6 +237,7 @@ const OPERATION_LABELS: Record<string, string> = {
 
 export default function App() {
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS);
   const [selectedPreset, setSelectedPreset] = useState("default");
   const [history, setHistory] = useState<RevisionSummary[]>([]);
@@ -291,13 +292,16 @@ export default function App() {
     }
   };
 
-  const handleUpload = async (file: File) => {
+  const handleUpload = async (files: File[]) => {
+    if (files.length === 0) return;
     setBusy(true);
     try {
-      const ds = await uploadDataset(file);
+      const loaded = await uploadDatasets(files);
+      const ds = loaded[0];
+      setDatasets((current) => [...current, ...loaded]);
       setDataset(ds);
       setResult(null);
-      setMessages([{ role: "assistant", content: `数据已导入：${ds.summary.shape.rows} 行 × ${ds.summary.shape.cols} 列。请告诉我你想画什么样的图。` }]);
+      setMessages([{ role: "assistant", content: `已导入 ${loaded.length} 个数据文件，当前使用“${ds.name || "未命名文件"}”：${ds.summary.shape.rows} 行 × ${ds.summary.shape.cols} 列。` }]);
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
     } finally {
@@ -406,9 +410,13 @@ export default function App() {
         <input
           ref={fileRef}
           type="file"
+          multiple
           accept=".csv,.tsv,.txt,.xlsx,.xls,.json"
           hidden
-          onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])}
+          onChange={(e) => {
+            void handleUpload(Array.from(e.target.files || []));
+            e.currentTarget.value = "";
+          }}
         />
         <button className="btn" onClick={() => fileRef.current?.click()} disabled={busy}>
           导入数据
@@ -418,6 +426,28 @@ export default function App() {
       <main className="layout">
         <section className="panel left">
           <h2>数据</h2>
+          {datasets.length > 0 && (
+            <div className="dataset-files">
+              <div className="dataset-files-heading">已导入文件（选择当前作图）</div>
+              {datasets.map((item) => (
+                <button
+                  key={item.id}
+                  className={`dataset-file${item.id === dataset?.id ? " active" : ""}`}
+                  onClick={() => {
+                    setDataset(item);
+                    setResult(null);
+                    setEditorCode("");
+                    setActiveCard(null);
+                  }}
+                  disabled={busy}
+                  title={item.name || item.id}
+                >
+                  <span>{item.name || "未命名文件"}</span>
+                  <small>{item.summary.shape.rows} × {item.summary.shape.cols}</small>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="preset-picker">
             <label htmlFor="preset-select">图表风格</label>
             <select

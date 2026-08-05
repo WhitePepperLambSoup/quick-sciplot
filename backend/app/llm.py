@@ -1,6 +1,7 @@
 """LLM 封装：OpenAI 兼容 chat/completions + 提示词 + mock 模式。"""
 
 import json
+import re
 import time
 
 import httpx
@@ -24,6 +25,10 @@ SYSTEM_PROMPT = """你是一名科研绘图助手。根据用户需求和数据�
 
 
 class LLMError(Exception):
+    pass
+
+
+class LLMEmptyResponseError(LLMError):
     pass
 
 
@@ -57,7 +62,7 @@ def _call_chat(messages: list[dict], temperature: float = 0.3) -> str:
         "model": settings.llm_model,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": 4096,
+        "max_tokens": settings.llm_max_tokens,
     }
     headers = {"Authorization": f"Bearer {settings.llm_api_key}", "Content-Type": "application/json"}
     try:
@@ -71,7 +76,36 @@ def _call_chat(messages: list[dict], temperature: float = 0.3) -> str:
         raise LLMError(f"LLM 接口请求失败: {exc}") from exc
 
     try:
-        return data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        message = choice.get("message") or {}
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+            if "".join(parts).strip():
+                return "".join(parts)
+        completion = choice.get("text")
+        if isinstance(completion, str) and completion.strip():
+            return completion
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str):
+            fenced = re.findall(r"```(?:python)?\s*(.*?)```", reasoning, flags=re.DOTALL | re.IGNORECASE)
+            if fenced:
+                return fenced[-1]
+        finish_reason = choice.get("finish_reason", "unknown")
+        keys = ", ".join(message.keys()) if isinstance(message, dict) else "unknown"
+        raise LLMEmptyResponseError(
+            f"模型返回空内容（model={settings.llm_model}, finish_reason={finish_reason}, message_keys={keys}）。"
+            "请检查模型名称、token 上限和 API 配置。"
+        )
+    except LLMError:
+        raise
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError(f"LLM 响应格式异常: {str(data)[:500]}") from exc
 
@@ -88,10 +122,24 @@ def _extract_code(text: str) -> str:
     return text
 
 
+def _call_code(messages: list[dict]) -> str:
+    try:
+        return _call_chat(messages)
+    except LLMEmptyResponseError:
+        retry_messages = list(messages)
+        retry_messages.append(
+            {
+                "role": "user",
+                "content": "上一轮没有返回可执行内容。请重新回答，只输出完整 Python 代码，不要输出思考过程、解释或 markdown。",
+            }
+        )
+        return _call_chat(retry_messages, temperature=0.1)
+
+
 def generate_plot_code(instruction: str, summary: dict, preset: str | None = None) -> str:
     preset_hint = f"\n系统选择的风格预设 ID：{preset or 'default'}（执行器会自动应用，请不要在代码中重复设置全局风格）"
     user_msg = f"用户想画的图：{instruction}\n{json.dumps(summary, ensure_ascii=False, indent=1)[:6000]}{preset_hint}"
-    code = _extract_code(_call_chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
+    code = _extract_code(_call_code([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
     if not code.strip():
         raise LLMError("LLM 返回了空代码")
     return code
@@ -104,7 +152,7 @@ def edit_plot_code(code: str, instruction: str, summary: dict, preset: str | Non
         f"数据摘要：\n{json.dumps(summary, ensure_ascii=False)[:3000]}\n"
         f"当前风格预设：{preset or 'default'}（执行器会自动应用）"
     )
-    edited = _extract_code(_call_chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
+    edited = _extract_code(_call_code([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
     if settings.llm_mock:
         edited = edited.rstrip("\n") + "\n# [mock] 已按指令应用修改\n"
     return edited
@@ -118,7 +166,7 @@ def repair_plot_code(code: str, error: str, summary: dict, preset: str | None = 
         f"数据摘要：\n{json.dumps(summary, ensure_ascii=False)[:3000]}\n"
         f"当前风格预设：{preset or 'default'}（执行器会自动应用）"
     )
-    repaired = _extract_code(_call_chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
+    repaired = _extract_code(_call_code([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
     if not repaired.strip():
         raise LLMError("自动修复返回了空代码")
     return repaired

@@ -78,17 +78,44 @@ def _get_dataset(dataset_id: str) -> dict:
 
 
 @app.post("/api/datasets", summary="上传数据文件，返回摘要")
-async def upload_dataset(file: UploadFile = File(...)):
-    content = await file.read()
-    if len(content) > 200 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="文件超过 200MB 限制")
-    try:
-        ds = data_loader.import_dataset(settings.data_dir, file.filename or "data.csv", content)
-    except data_loader.DataError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    DATASETS[ds["id"]] = ds
-    database.save_dataset(ds)
-    return {"id": ds["id"], "summary": ds["summary"]}
+async def upload_dataset(
+    files: list[UploadFile] | None = File(default=None),
+    file: UploadFile | None = File(default=None),
+):
+    uploads = list(files or [])
+    if file is not None:
+        uploads.insert(0, file)
+    if not uploads:
+        raise HTTPException(status_code=400, detail="至少需要选择一个数据文件")
+    if len(uploads) > 20:
+        raise HTTPException(status_code=413, detail="一次最多导入 20 个文件")
+
+    total_bytes = 0
+    contents = []
+    for upload in uploads:
+        content = await upload.read()
+        total_bytes += len(content)
+        if len(content) > 200 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail=f"文件 {upload.filename or 'data'} 超过 200MB 限制")
+        if total_bytes > 500 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="本次导入总大小不能超过 500MB")
+        contents.append((upload, content))
+
+    datasets = []
+    for upload, content in contents:
+        try:
+            ds = data_loader.import_dataset(settings.data_dir, upload.filename or "data.csv", content)
+        except data_loader.DataError as exc:
+            raise HTTPException(status_code=400, detail=f"{upload.filename or 'data'}: {exc}") from exc
+        ds["name"] = upload.filename or "data.csv"
+        DATASETS[ds["id"]] = ds
+        database.save_dataset(ds)
+        datasets.append({"id": ds["id"], "name": ds["name"], "summary": ds["summary"]})
+
+    response = {"datasets": datasets}
+    if len(datasets) == 1:
+        response.update({"id": datasets[0]["id"], "summary": datasets[0]["summary"]})
+    return response
 
 
 @app.get("/api/datasets/{dataset_id}", summary="获取数据集摘要")

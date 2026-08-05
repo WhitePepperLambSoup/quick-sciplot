@@ -12,9 +12,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function uploadDataset(file: File): Promise<DatasetInfo> {
+  const datasets = await uploadDatasets([file]);
+  return datasets[0];
+}
+
+export async function uploadDatasets(files: File[]): Promise<DatasetInfo[]> {
   const form = new FormData();
-  form.append("file", file);
-  return request<DatasetInfo>("/datasets", { method: "POST", body: form });
+  files.forEach((file) => form.append("files", file));
+  const data = await request<{ datasets?: DatasetInfo[]; id?: string; summary?: DatasetInfo["summary"] }>("/datasets", {
+    method: "POST",
+    body: form,
+  });
+  if (data.datasets?.length) return data.datasets;
+  if (data.id && data.summary) return [{ id: data.id, name: files[0]?.name, summary: data.summary }];
+  throw new Error("服务器没有返回导入的数据集");
 }
 
 export async function listPresets(): Promise<Preset[]> {

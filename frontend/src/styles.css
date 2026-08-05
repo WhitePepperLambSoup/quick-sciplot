@@ -120,6 +120,60 @@ body {
   background: #fafbfe;
 }
 
+.dataset-files {
+  margin-bottom: 12px;
+}
+
+.dataset-files-heading {
+  margin-bottom: 6px;
+  color: #7d8495;
+  font-size: 11px;
+}
+
+.dataset-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid #e3e6ee;
+  border-radius: 6px;
+  background: #fff;
+  color: #454b5e;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+
+.dataset-file + .dataset-file {
+  margin-top: 4px;
+}
+
+.dataset-file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataset-file small {
+  flex: 0 0 auto;
+  color: #9aa1b2;
+  font-size: 10px;
+}
+
+.dataset-file:hover,
+.dataset-file.active {
+  border-color: #2563eb;
+  background: #eff4ff;
+}
+
+.dataset-file:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .preset-picker label {
   display: block;
   margin-bottom: 5px;
