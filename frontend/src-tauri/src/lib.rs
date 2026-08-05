@@ -102,6 +102,11 @@ fn find_sidecar(app: &AppHandle) -> Option<PathBuf> {
 fn stop_backend(state: &BackendProcess) {
     if let Ok(mut process) = state.0.lock() {
         if let Some(mut child) = process.take() {
+            #[cfg(target_os = "windows")]
+            let _ = Command::new("taskkill")
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .status();
+            #[cfg(not(target_os = "windows"))]
             let _ = child.kill();
             let _ = child.wait();
         }

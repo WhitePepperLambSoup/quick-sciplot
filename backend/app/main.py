@@ -238,16 +238,26 @@ def _normalize_preset(preset_id: str | None) -> str:
 
 def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", operation: str = "run") -> dict:
     out_dir = settings.data_dir / "outputs" / uuid.uuid4().hex
+    repair_attempts = 0
+    repair_error = ""
     try:
         result = sandbox.run_plot_code(code, Path(ds["path"]), out_dir, preset_id)
     except sandbox.SandboxUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except sandbox.SandboxSyntaxError as exc:
+        if operation == "run" or settings.auto_repair_attempts <= 0:
+            raise HTTPException(status_code=400, detail=f"代码语法错误: {exc}") from exc
+        result = {
+            "success": False,
+            "returncode": 1,
+            "stdout": "",
+            "stderr": str(exc),
+            "formats": [],
+        }
     except sandbox.SandboxError as exc:
         raise HTTPException(status_code=400, detail=f"代码未通过安全检查: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=408, detail=f"执行超时（>{settings.sandbox_timeout}s）") from exc
-    repair_attempts = 0
-    repair_error = ""
     if not result["success"] and operation != "run":
         while repair_attempts < max(0, settings.auto_repair_attempts):
             try:

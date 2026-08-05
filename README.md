@@ -60,7 +60,7 @@ cd frontend
 npm run desktop:dev
 ```
 
-构建 Windows 桌面安装包时会自动运行 PyInstaller 生成 FastAPI sidecar，最终用户不需要安装 Python：
+构建 Windows 桌面安装包时会自动运行 PyInstaller 生成 FastAPI sidecar，最终用户不需要安装 Python。打包版执行 LLM 代码时会优先使用 Docker 沙箱，因此最终用户仍需安装 Docker Desktop 并构建 `quick-sciplot-sandbox:latest` 镜像：
 
 ```bash
 cd ../backend

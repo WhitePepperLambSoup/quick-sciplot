@@ -227,6 +227,18 @@ def test_generation_auto_repairs_runtime_error(monkeypatch):
     assert data["run"]["success"], data["run"].get("stderr")
 
 
+def test_generation_auto_repairs_syntax_error(monkeypatch):
+    from app import llm
+
+    ds_id = upload_dataset()["id"]
+    monkeypatch.setattr(llm, "generate_plot_code", lambda *args, **kwargs: "fig = [")
+    resp = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画柱状图"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["repair_attempts"] == 1
+    assert data["run"]["success"], data["run"].get("stderr")
+
+
 def test_preset_list_has_fallbacks():
     resp = client.get("/api/presets")
     assert resp.status_code == 200

@@ -85,6 +85,10 @@ class SandboxError(Exception):
     pass
 
 
+class SandboxSyntaxError(SandboxError):
+    """生成代码无法解析，允许生成流程交给 LLM 修复。"""
+
+
 class SandboxUnavailableError(SandboxError):
     """请求了 Docker 模式但运行环境不可用。"""
 
@@ -93,7 +97,7 @@ def validate_script(code: str) -> None:
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
-        raise SandboxError(f"代码语法错误: {exc}") from exc
+        raise SandboxSyntaxError(f"代码语法错误: {exc}") from exc
 
     allowed = set(settings.sandbox_allowed_modules)
 
@@ -206,7 +210,13 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
     for path in output_paths.values():
         path.unlink(missing_ok=True)
 
-    if settings.sandbox_mode == "process":
+    execution_mode = settings.sandbox_mode
+    # PyInstaller 的 sys.executable 是 sidecar 本身，不是 Python 解释器。
+    # 打包版必须使用容器执行，避免把 -I/-u/-c 传给后端 CLI。
+    if execution_mode == "process" and getattr(sys, "frozen", False):
+        execution_mode = "docker"
+
+    if execution_mode == "process":
         env = os.environ.copy()
         env["MPLBACKEND"] = "Agg"
         env["OUTPUT_PATH"] = str(output_paths["png"])
@@ -221,10 +231,10 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
             timeout=settings.sandbox_timeout,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
-    elif settings.sandbox_mode == "docker":
+    elif execution_mode == "docker":
         proc = _run_in_docker(code, csv_path, output_dir, preset_id)
     else:
-        raise SandboxError(f"未知沙箱模式: {settings.sandbox_mode}")
+        raise SandboxError(f"未知沙箱模式: {execution_mode}")
 
     out_path = output_paths["png"]
     result = {
