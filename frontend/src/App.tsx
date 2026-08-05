@@ -31,6 +31,29 @@ interface ParameterInputProps {
   onApply: (parameter: CodeParameter, value: string) => Promise<void>;
 }
 
+const MODEL_OPTIONS = ["deepseek-chat", "deepseek-reasoner", "gpt-4o-mini", "qwen-plus", "glm-4.5", "gemini-2.0-flash"];
+
+const FALLBACK_PRESETS: Preset[] = [
+  { id: "default", name: "默认", description: "Matplotlib 默认风格，适合快速预览。", source: "内置", source_url: "", category: "基础", local_available: false, has_fallback: true },
+  { id: "science", name: "SciencePlots 科研", description: "简洁、细线、内向刻度，适合一般科研论文。", source: "SciencePlots", source_url: "", category: "论文", local_available: false, has_fallback: true },
+  { id: "science-nature", name: "Nature 期刊", description: "Nature 论文常用的紧凑无衬线风格。", source: "SciencePlots", source_url: "", category: "期刊", local_available: false, has_fallback: true },
+  { id: "science-ieee", name: "IEEE 期刊", description: "适合 IEEE 单栏论文的紧凑黑白友好风格。", source: "SciencePlots", source_url: "", category: "期刊", local_available: false, has_fallback: true },
+  { id: "science-bright", name: "SciencePlots 色盲友好", description: "适合多系列数据的色盲友好配色。", source: "SciencePlots", source_url: "", category: "配色", local_available: false, has_fallback: true },
+  { id: "lovely", name: "LovelyPlots 论文", description: "干净、可编辑，适合论文和学位论文排版。", source: "LovelyPlots", source_url: "", category: "论文", local_available: false, has_fallback: true },
+  { id: "tueplots", name: "期刊尺寸（tueplots）", description: "按出版物尺寸和字体层级组织的基础风格。", source: "tueplots", source_url: "", category: "尺寸", local_available: false, has_fallback: true },
+];
+
+const DEFAULT_LLM_CONFIG: LLMConfig = {
+  base_url: "https://api.deepseek.com/v1",
+  model: "deepseek-chat",
+  mock: false,
+  has_api_key: false,
+  api_key_masked: "",
+  auto_repair_attempts: 1,
+  sandbox_timeout: 60,
+  sandbox_mode: "process",
+};
+
 function ParameterInput({ parameter, disabled, onApply }: ParameterInputProps) {
   const [value, setValue] = useState(parameter.value);
 
@@ -96,6 +119,7 @@ interface SettingsDialogProps {
 function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
   const [baseUrl, setBaseUrl] = useState(config.base_url);
   const [model, setModel] = useState(config.model);
+  const [modelChoice, setModelChoice] = useState(MODEL_OPTIONS.includes(config.model) ? config.model : "custom");
   const [apiKey, setApiKey] = useState("");
   const [mock, setMock] = useState(config.mock);
   const [repairAttempts, setRepairAttempts] = useState(String(config.auto_repair_attempts));
@@ -147,7 +171,7 @@ function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
         <div className="settings-heading">
           <div>
             <h2 id="settings-title">模型设置</h2>
-            <p>配置保存在本机 backend/.env，不会通过配置接口返回完整密钥。</p>
+            <p>配置保存在本机用户目录，不会通过配置接口返回完整密钥。</p>
           </div>
           <button className="icon-btn" onClick={onClose} aria-label="关闭设置">×</button>
         </div>
@@ -157,7 +181,20 @@ function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
         </label>
         <label className="settings-field">
           <span>模型名称</span>
-          <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" />
+          <select
+            value={modelChoice}
+            onChange={(e) => {
+              const value = e.target.value;
+              setModelChoice(value);
+              if (value !== "custom") setModel(value);
+            }}
+          >
+            {MODEL_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+            <option value="custom">自定义模型…</option>
+          </select>
+          {modelChoice === "custom" && (
+            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="输入模型名称" />
+          )}
         </label>
         <label className="settings-field">
           <span>API Key {config.has_api_key && <small>当前：{config.api_key_masked}</small>}</span>
@@ -200,10 +237,10 @@ const OPERATION_LABELS: Record<string, string> = {
 
 export default function App() {
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
-  const [presets, setPresets] = useState<Preset[]>([]);
+  const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS);
   const [selectedPreset, setSelectedPreset] = useState("default");
   const [history, setHistory] = useState<RevisionSummary[]>([]);
-  const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
+  const [llmConfig, setLlmConfig] = useState<LLMConfig>(DEFAULT_LLM_CONFIG);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [result, setResult] = useState<PlotResult | null>(null);
@@ -215,8 +252,26 @@ export default function App() {
   const selectedPresetInfo = presets.find((preset) => preset.id === selectedPreset);
 
   useEffect(() => {
-    listPresets().then(setPresets).catch(() => setPresets([]));
-    getConfig().then(setLlmConfig).catch(() => setLlmConfig(null));
+    let disposed = false;
+    let attempts = 0;
+    let timer: number | undefined;
+    const loadBackendMetadata = async () => {
+      try {
+        const [nextPresets, nextConfig] = await Promise.all([listPresets(), getConfig()]);
+        if (disposed) return;
+        if (nextPresets.length > 0) setPresets(nextPresets);
+        setLlmConfig(nextConfig);
+      } catch {
+        if (!disposed && attempts++ < 20) {
+          timer = window.setTimeout(loadBackendMetadata, 1000);
+        }
+      }
+    };
+    void loadBackendMetadata();
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -342,12 +397,10 @@ export default function App() {
       <header className="header">
         <h1>Quick SciPlot</h1>
         <span className="sub">LLM 驱动的快捷科研画图</span>
-        {llmConfig && (
-          <span className={`llm-status${llmConfig.mock || llmConfig.has_api_key ? " ready" : ""}`}>
-            {llmConfig.mock ? "Mock 模式" : llmConfig.has_api_key ? `已配置 · ${llmConfig.model}` : "未配置 API"}
-          </span>
-        )}
-        <button className="btn secondary" onClick={() => setSettingsOpen(true)} disabled={busy || !llmConfig}>
+        <span className={`llm-status${llmConfig.mock || llmConfig.has_api_key ? " ready" : ""}`}>
+          {llmConfig.mock ? "Mock 模式" : llmConfig.has_api_key ? `已配置 · ${llmConfig.model}` : "未配置 API"}
+        </span>
+        <button className="btn secondary" onClick={() => setSettingsOpen(true)} disabled={busy}>
           模型设置
         </button>
         <input
@@ -575,7 +628,7 @@ export default function App() {
           </div>
         </section>
       )}
-      {settingsOpen && llmConfig && (
+      {settingsOpen && (
         <SettingsDialog config={llmConfig} onClose={() => setSettingsOpen(false)} onSaved={setLlmConfig} />
       )}
     </div>

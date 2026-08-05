@@ -205,32 +205,37 @@ plt.close("all")
 def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | None = None) -> dict:
     validate_script(code)
     preset_registry.get_preset(preset_id)
+    csv_path = csv_path.resolve()
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     output_paths = _output_paths(output_dir)
     for path in output_paths.values():
         path.unlink(missing_ok=True)
 
     execution_mode = settings.sandbox_mode
-    # PyInstaller 的 sys.executable 是 sidecar 本身，不是 Python 解释器。
-    # 打包版必须使用容器执行，避免把 -I/-u/-c 传给后端 CLI。
-    if execution_mode == "process" and getattr(sys, "frozen", False):
-        execution_mode = "docker"
+    # PyInstaller sidecar 不是 Python CLI；优先 Docker，没有 Docker 时使用
+    # sidecar 自带的 worker 子进程，避免把 -I/-u/-c 传给后端 server CLI。
+    if getattr(sys, "frozen", False) and execution_mode == "docker" and _find_docker() is None:
+        execution_mode = "process"
 
     if execution_mode == "process":
-        env = os.environ.copy()
-        env["MPLBACKEND"] = "Agg"
-        env["OUTPUT_PATH"] = str(output_paths["png"])
-        env.update({f"OUTPUT_{format_name.upper()}": str(path) for format_name, path in output_paths.items()})
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        proc = subprocess.run(
-            [sys.executable, "-I", "-u", "-c", _build_script(code, csv_path, preset_id)],
-            capture_output=True,
-            text=True,
-            cwd=str(output_dir),
-            env=env,
-            timeout=settings.sandbox_timeout,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
+        if getattr(sys, "frozen", False):
+            proc = _run_frozen_worker(code, csv_path, output_dir, preset_id, output_paths)
+        else:
+            env = os.environ.copy()
+            env["MPLBACKEND"] = "Agg"
+            env["OUTPUT_PATH"] = str(output_paths["png"])
+            env.update({f"OUTPUT_{format_name.upper()}": str(path) for format_name, path in output_paths.items()})
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            proc = subprocess.run(
+                [sys.executable, "-I", "-u", "-c", _build_script(code, csv_path, preset_id)],
+                capture_output=True,
+                text=True,
+                cwd=str(output_dir),
+                env=env,
+                timeout=settings.sandbox_timeout,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
     elif execution_mode == "docker":
         proc = _run_in_docker(code, csv_path, output_dir, preset_id)
     else:
@@ -260,6 +265,34 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
 def _output_paths(output_dir: Path) -> dict[str, Path]:
     extensions = {"png": "png", "svg": "svg", "pdf": "pdf", "plotly": "plotly.json"}
     return {format_name: output_dir / f"out.{extension}" for format_name, extension in extensions.items()}
+
+
+def _run_frozen_worker(
+    code: str,
+    csv_path: Path,
+    output_dir: Path,
+    preset_id: str | None,
+    output_paths: dict[str, Path],
+) -> subprocess.CompletedProcess:
+    script_path = output_dir / "worker-script.py"
+    script_path.write_text(_build_script(code, csv_path, preset_id, include_local_presets=False), encoding="utf-8")
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+    env["OUTPUT_PATH"] = str(output_paths["png"])
+    env.update({f"OUTPUT_{format_name.upper()}": str(path) for format_name, path in output_paths.items()})
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    try:
+        return subprocess.run(
+            [sys.executable, "--worker", "--script-file", str(script_path)],
+            capture_output=True,
+            text=True,
+            cwd=str(output_dir),
+            env=env,
+            timeout=settings.sandbox_timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    finally:
+        script_path.unlink(missing_ok=True)
 
 
 def _run_in_docker(code: str, csv_path: Path, output_dir: Path, preset_id: str | None) -> subprocess.CompletedProcess:
