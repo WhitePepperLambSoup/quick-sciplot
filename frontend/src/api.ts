@@ -1,6 +1,6 @@
 import type { CodeParameter, ConnectionResult, DatasetInfo, LLMConfig, PlotResult, Preset, RevisionSummary } from "./types";
 
-const BASE = "/api";
+const BASE = import.meta.env.DEV ? "/api" : "http://127.0.0.1:8000/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(BASE + path, init);
