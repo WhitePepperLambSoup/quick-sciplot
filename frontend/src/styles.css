@@ -635,6 +635,36 @@ body {
   white-space: pre-wrap;
 }
 
+.statement-explanation {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0;
+  color: #454b5e;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.statement-explanation small {
+  color: #7d8495;
+  font-size: 10px;
+}
+
+.data-bindings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.data-bindings span {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #eef4ff;
+  color: #315ca8;
+  font-size: 10px;
+}
+
 .parameter-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -652,11 +682,13 @@ body {
   font-size: 10px;
 }
 
-.parameter-field input {
+.parameter-field input,
+.parameter-field select {
   min-width: 0;
   padding: 4px 5px;
   border: 1px solid #d7dbe6;
   border-radius: 4px;
+  background: #fff;
   color: #1f2430;
   font: inherit;
   font-size: 11px;

@@ -25,10 +25,22 @@ import type {
   StatementCard,
 } from "./types";
 
+type Language = "zh" | "en";
+
+const UI_TEXT = {
+  zh: {
+    subtitle: "LLM 驱动的快捷科研画图", modelConfigured: "已配置", mockMode: "Mock 模式", noApi: "未配置 API", settings: "模型设置", importData: "导入数据", data: "数据", importedFiles: "已导入文件（选择当前作图）", unnamed: "未命名文件", style: "图表风格", rows: "行", columns: "列", column: "列名", type: "类型", missing: "缺失", stats: "统计", importHint: "点击右上角“导入数据”，支持 CSV / TSV / Excel / JSON。", preview: "预览", previewHint: "在右侧描述要画的图，结果会显示在这里。", chat: "AI 对话", placeholder: "例如：画柱状图，对比每年的 revenue，加标题", send: "发送", generating: "生成中…", codeLocator: "代码定位", codeHint: "点击片段定位源码；参数失焦后自动应用并重绘", fullCode: "完整代码（可直接编辑）", runCode: "运行完整代码", running: "执行中…", export: "导出：", history: "版本历史", firstVersion: "生成第一张图后会自动记录版本。", language: "EN", imported: "已导入", current: "当前使用", files: "个数据文件", restoreSuccess: "已恢复历史版本并生成新版本 ✓",
+  },
+  en: {
+    subtitle: "LLM-powered quick scientific plotting", modelConfigured: "Configured", mockMode: "Mock mode", noApi: "API not configured", settings: "Model settings", importData: "Import data", data: "Data", importedFiles: "Imported files (select active dataset)", unnamed: "Unnamed file", style: "Figure style", rows: "rows", columns: "columns", column: "Column", type: "Type", missing: "Missing", stats: "Stats", importHint: "Click “Import data”. CSV / TSV / Excel / JSON are supported.", preview: "Preview", previewHint: "Describe the figure on the right to see the result here.", chat: "AI chat", placeholder: "Example: compare yearly revenue with a bar chart and add a title", send: "Send", generating: "Generating…", codeLocator: "Code locator", codeHint: "Click a statement to locate it; parameter changes redraw automatically", fullCode: "Full code (editable)", runCode: "Run full code", running: "Running…", export: "Export:", history: "Version history", firstVersion: "Versions will appear after the first plot.", language: "中文", imported: "Imported", current: "Active", files: "datasets", restoreSuccess: "Version restored as a new revision ✓",
+  },
+} as const;
+
 interface ParameterInputProps {
   parameter: CodeParameter;
   disabled: boolean;
   onApply: (parameter: CodeParameter, value: string) => Promise<void>;
+  language: Language;
 }
 
 const MODEL_OPTIONS = ["deepseek-chat", "deepseek-reasoner", "gpt-4o-mini", "qwen-plus", "glm-4.5", "gemini-2.0-flash"];
@@ -54,7 +66,7 @@ const DEFAULT_LLM_CONFIG: LLMConfig = {
   sandbox_mode: "process",
 };
 
-function ParameterInput({ parameter, disabled, onApply }: ParameterInputProps) {
+function ParameterInput({ parameter, disabled, onApply, language }: ParameterInputProps) {
   const [value, setValue] = useState(parameter.value);
 
   useEffect(() => {
@@ -67,22 +79,36 @@ function ParameterInput({ parameter, disabled, onApply }: ParameterInputProps) {
     }
   };
 
+  const isColumn = (parameter.type === "column" || parameter.type === "column_name") && parameter.options?.length;
+
   return (
     <label className="parameter-field">
-      <span>{parameter.label}</span>
-      <input
-        type={parameter.type === "number" ? "number" : "text"}
-        value={value}
-        disabled={disabled}
-        title={`源码位置 L${parameter.start_line}`}
-        onChange={(e) => setValue(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.currentTarget.blur();
-          }
-        }}
-      />
+      <span>{language === "en" ? parameter.name : parameter.label}</span>
+      {isColumn ? (
+        <select
+          value={value}
+          disabled={disabled}
+          title={`源码位置 L${parameter.start_line}`}
+          onChange={(e) => {
+            setValue(e.target.value);
+            void onApply(parameter, e.target.value);
+          }}
+        >
+          {parameter.options?.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+      ) : (
+        <input
+          type={parameter.type === "number" ? "number" : "text"}
+          value={value}
+          disabled={disabled}
+          title={`源码位置 L${parameter.start_line}`}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+        />
+      )}
     </label>
   );
 }
@@ -114,9 +140,11 @@ interface SettingsDialogProps {
   config: LLMConfig;
   onClose: () => void;
   onSaved: (config: LLMConfig) => void;
+  language: Language;
 }
 
-function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
+function SettingsDialog({ config, onClose, onSaved, language }: SettingsDialogProps) {
+  const ui = UI_TEXT[language];
   const [baseUrl, setBaseUrl] = useState(config.base_url);
   const [model, setModel] = useState(config.model);
   const [modelChoice, setModelChoice] = useState(MODEL_OPTIONS.includes(config.model) ? config.model : "custom");
@@ -142,7 +170,7 @@ function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
       });
       setApiKey("");
       onSaved(next);
-      setMessage("配置已保存");
+      setMessage(language === "zh" ? "配置已保存" : "Configuration saved");
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -156,7 +184,7 @@ function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
     try {
       const result = await testLLMConnection();
       setConnection(result);
-      setMessage(`连接成功，延迟 ${result.latency_ms} ms`);
+      setMessage(language === "zh" ? `连接成功，延迟 ${result.latency_ms} ms` : `Connected in ${result.latency_ms} ms`);
     } catch (error) {
       setConnection(null);
       setMessage(String(error));
@@ -170,17 +198,17 @@ function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
       <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <div className="settings-heading">
           <div>
-            <h2 id="settings-title">模型设置</h2>
-            <p>配置保存在本机用户目录，不会通过配置接口返回完整密钥。</p>
+            <h2 id="settings-title">{ui.settings}</h2>
+            <p>{language === "zh" ? "配置保存在本机用户目录，不会通过配置接口返回完整密钥。" : "Saved in the local user directory. The full API key is never returned."}</p>
           </div>
           <button className="icon-btn" onClick={onClose} aria-label="关闭设置">×</button>
         </div>
         <label className="settings-field">
-          <span>OpenAI 兼容 Base URL</span>
+          <span>OpenAI-compatible Base URL</span>
           <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.deepseek.com/v1" />
         </label>
         <label className="settings-field">
-          <span>模型名称</span>
+          <span>{language === "zh" ? "模型名称" : "Model"}</span>
           <select
             value={modelChoice}
             onChange={(e) => {
@@ -190,37 +218,37 @@ function SettingsDialog({ config, onClose, onSaved }: SettingsDialogProps) {
             }}
           >
             {MODEL_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-            <option value="custom">自定义模型…</option>
+            <option value="custom">{language === "zh" ? "自定义模型…" : "Custom model…"}</option>
           </select>
           {modelChoice === "custom" && (
             <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="输入模型名称" />
           )}
         </label>
         <label className="settings-field">
-          <span>API Key {config.has_api_key && <small>当前：{config.api_key_masked}</small>}</span>
-          <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="留空表示保持当前密钥" autoComplete="new-password" />
+          <span>API Key {config.has_api_key && <small>{language === "zh" ? "当前" : "Current"}: {config.api_key_masked}</small>}</span>
+          <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={language === "zh" ? "留空表示保持当前密钥" : "Leave blank to keep current key"} autoComplete="new-password" />
         </label>
         <div className="settings-row">
           <label className="settings-check">
             <input type="checkbox" checked={mock} onChange={(e) => setMock(e.target.checked)} />
-            <span>Mock 演示模式</span>
+            <span>{ui.mockMode}</span>
           </label>
           <label className="settings-field compact">
-            <span>自动修复次数（0–3）</span>
+            <span>{language === "zh" ? "自动修复次数（0–3）" : "Auto-repair attempts (0–3)"}</span>
             <input type="number" min="0" max="3" value={repairAttempts} onChange={(e) => setRepairAttempts(e.target.value)} />
           </label>
         </div>
         <label className="settings-field">
-          <span>代码执行隔离</span>
+          <span>{language === "zh" ? "代码执行隔离" : "Code execution isolation"}</span>
           <select value={sandboxMode} onChange={(e) => setSandboxMode(e.target.value as "process" | "docker")}>
-            <option value="process">本地受限进程（无需 Docker）</option>
-            <option value="docker">Docker 强隔离（需先构建镜像）</option>
+            <option value="process">{language === "zh" ? "本地受限进程（无需 Docker）" : "Local worker (no Docker)"}</option>
+            <option value="docker">{language === "zh" ? "Docker 强隔离（需先构建镜像）" : "Docker isolation (build image first)"}</option>
           </select>
         </label>
         {message && <p className={`settings-message${connection ? " success" : ""}`}>{message}</p>}
         <div className="settings-actions">
-          <button className="btn secondary" onClick={test} disabled={busy}>测试当前连接</button>
-          <button className="btn" onClick={save} disabled={busy}>{busy ? "处理中…" : "保存配置"}</button>
+          <button className="btn secondary" onClick={test} disabled={busy}>{language === "zh" ? "测试当前连接" : "Test connection"}</button>
+          <button className="btn" onClick={save} disabled={busy}>{busy ? (language === "zh" ? "处理中…" : "Working…") : (language === "zh" ? "保存配置" : "Save" )}</button>
         </div>
       </section>
     </div>
@@ -236,6 +264,11 @@ const OPERATION_LABELS: Record<string, string> = {
 };
 
 export default function App() {
+  const [language, setLanguage] = useState<Language>(() => {
+    const stored = window.localStorage.getItem("quick-sciplot-language");
+    return stored === "en" ? "en" : "zh";
+  });
+  const ui = UI_TEXT[language];
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS);
@@ -251,6 +284,12 @@ export default function App() {
   const [activeCard, setActiveCard] = useState<StatementCard | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const selectedPresetInfo = presets.find((preset) => preset.id === selectedPreset);
+
+  const toggleLanguage = () => {
+    const next = language === "zh" ? "en" : "zh";
+    setLanguage(next);
+    window.localStorage.setItem("quick-sciplot-language", next);
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -388,7 +427,7 @@ export default function App() {
       setEditorCode(res.code);
       setActiveCard(null);
       await refreshHistory(dataset.id);
-      setMessages((m) => [...m, { role: "assistant", content: "已恢复历史版本并生成新版本 ✓" }]);
+      setMessages((m) => [...m, { role: "assistant", content: ui.restoreSuccess }]);
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
     } finally {
@@ -400,12 +439,15 @@ export default function App() {
     <div className="app">
       <header className="header">
         <h1>Quick SciPlot</h1>
-        <span className="sub">LLM 驱动的快捷科研画图</span>
+        <span className="sub">{ui.subtitle}</span>
         <span className={`llm-status${llmConfig.mock || llmConfig.has_api_key ? " ready" : ""}`}>
-          {llmConfig.mock ? "Mock 模式" : llmConfig.has_api_key ? `已配置 · ${llmConfig.model}` : "未配置 API"}
+          {llmConfig.mock ? ui.mockMode : llmConfig.has_api_key ? `${ui.modelConfigured} · ${llmConfig.model}` : ui.noApi}
         </span>
+        <button className="btn secondary" onClick={toggleLanguage} disabled={busy}>
+          {ui.language}
+        </button>
         <button className="btn secondary" onClick={() => setSettingsOpen(true)} disabled={busy}>
-          模型设置
+          {ui.settings}
         </button>
         <input
           ref={fileRef}
@@ -419,16 +461,16 @@ export default function App() {
           }}
         />
         <button className="btn" onClick={() => fileRef.current?.click()} disabled={busy}>
-          导入数据
+          {ui.importData}
         </button>
       </header>
 
       <main className="layout">
         <section className="panel left">
-          <h2>数据</h2>
+          <h2>{ui.data}</h2>
           {datasets.length > 0 && (
             <div className="dataset-files">
-              <div className="dataset-files-heading">已导入文件（选择当前作图）</div>
+              <div className="dataset-files-heading">{ui.importedFiles}</div>
               {datasets.map((item) => (
                 <button
                   key={item.id}
@@ -442,14 +484,14 @@ export default function App() {
                   disabled={busy}
                   title={item.name || item.id}
                 >
-                  <span>{item.name || "未命名文件"}</span>
+                  <span>{item.name || ui.unnamed}</span>
                   <small>{item.summary.shape.rows} × {item.summary.shape.cols}</small>
                 </button>
               ))}
             </div>
           )}
           <div className="preset-picker">
-            <label htmlFor="preset-select">图表风格</label>
+            <label htmlFor="preset-select">{ui.style}</label>
             <select
               id="preset-select"
               value={selectedPreset}
@@ -477,19 +519,19 @@ export default function App() {
             )}
           </div>
           {!dataset ? (
-            <p className="hint">点击右上角"导入数据"，支持 CSV / TSV / Excel / JSON。</p>
+            <p className="hint">{ui.importHint}</p>
           ) : (
             <>
               <p className="meta">
-                {dataset.summary.shape.rows} 行 × {dataset.summary.shape.cols} 列
+                {dataset.summary.shape.rows} {ui.rows} × {dataset.summary.shape.cols} {ui.columns}
               </p>
               <table className="summary">
                 <thead>
                   <tr>
-                    <th>列名</th>
-                    <th>类型</th>
-                    <th>缺失</th>
-                    <th>统计</th>
+                    <th>{ui.column}</th>
+                    <th>{ui.type}</th>
+                    <th>{ui.missing}</th>
+                    <th>{ui.stats}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -510,11 +552,11 @@ export default function App() {
           {dataset && (
             <div className="history-section">
               <div className="history-heading">
-                <span>版本历史</span>
+                <span>{ui.history}</span>
                 <span className="history-count">{history.length}</span>
               </div>
               {history.length === 0 ? (
-                <p className="hint">生成第一张图后会自动记录版本。</p>
+                <p className="hint">{ui.firstVersion}</p>
               ) : (
                 <div className="history-list">
                   {history.slice(0, 12).map((revision) => (
@@ -537,18 +579,18 @@ export default function App() {
          </section>
 
         <section className="panel center">
-          <h2>预览</h2>
+          <h2>{ui.preview}</h2>
           {result?.run.success && result.run.interactive ? (
             <InteractivePlot figure={result.run.interactive} />
           ) : result?.run.success && result.run.image ? (
             <img className="plot-img" src={result.run.image} alt="生成的图表" />
           ) : (
-            <p className="hint">在右侧描述要画的图，结果会显示在这里。</p>
+            <p className="hint">{ui.previewHint}</p>
           )}
           {result && !result.run.success && <pre className="error">{result.run.stderr}</pre>}
           {result?.run.success && result.revision_id && (
             <div className="export-actions">
-              <span>导出：</span>
+              <span>{ui.export}</span>
               {(["png", "svg", "pdf", "plotly"] as const)
                 .filter((format) => result.export_formats.includes(format))
                 .map((format) => (
@@ -566,7 +608,7 @@ export default function App() {
         </section>
 
         <section className="panel right">
-          <h2>AI 对话</h2>
+          <h2>{ui.chat}</h2>
           <div className="chat">
             {messages.map((m, i) => (
               <div key={i} className={`msg ${m.role}${m.error ? " error" : ""}`}>
@@ -584,11 +626,11 @@ export default function App() {
                   send();
                 }
               }}
-              placeholder="例如：画柱状图，对比每年的 revenue，加标题"
+              placeholder={ui.placeholder}
               rows={2}
             />
             <button className="btn" onClick={send} disabled={busy || !dataset}>
-              {busy ? "生成中…" : "发送"}
+              {busy ? ui.generating : ui.send}
             </button>
           </div>
         </section>
@@ -597,8 +639,8 @@ export default function App() {
       {result && (
         <section className="code-panel">
           <div className="code-panel-heading">
-            <h2>代码定位</h2>
-            <span>点击片段定位源码；参数失焦后自动应用并重绘</span>
+            <h2>{ui.codeLocator}</h2>
+            <span>{ui.codeHint}</span>
           </div>
           <div className="code-workbench">
             <div className="line-viewer" aria-label="带行号的完整代码">
@@ -632,6 +674,21 @@ export default function App() {
                     <span className="lines">L{s.start}–{s.end}</span>
                     <span className="label">{s.label || "代码片段"}</span>
                   </div>
+                  {(s.explanation_zh || s.explanation_en) && (
+                    <div className="statement-explanation">
+                      <strong>{s.explanation_zh}</strong>
+                      <small>{s.explanation_en}</small>
+                    </div>
+                  )}
+                  {s.data_bindings.length > 0 && (
+                    <div className="data-bindings">
+                      {s.data_bindings.map((binding) => (
+                        <span key={`${binding.axis}-${binding.column}`}>
+                          {binding.axis} → {binding.column} / {binding.meaning_zh} ({binding.meaning_en})
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <pre className="card-code">{s.code}</pre>
                   {s.parameters.length > 0 && (
                     <div className="parameter-list" onClick={(e) => e.stopPropagation()}>
@@ -641,6 +698,7 @@ export default function App() {
                           parameter={parameter}
                           disabled={busy}
                           onApply={applyParameterChange}
+                          language={language}
                         />
                       ))}
                     </div>
@@ -649,17 +707,17 @@ export default function App() {
               ))}
             </div>
             <div className="editor">
-              <div className="editor-label">完整代码（可直接编辑）</div>
+              <div className="editor-label">{ui.fullCode}</div>
               <textarea value={editorCode} onChange={(e) => setEditorCode(e.target.value)} spellCheck={false} />
               <button className="btn" onClick={runEditor} disabled={busy}>
-                {busy ? "执行中…" : "运行完整代码"}
+                {busy ? ui.running : ui.runCode}
               </button>
             </div>
           </div>
         </section>
       )}
       {settingsOpen && (
-        <SettingsDialog config={llmConfig} onClose={() => setSettingsOpen(false)} onSaved={setLlmConfig} />
+        <SettingsDialog config={llmConfig} onClose={() => setSettingsOpen(false)} onSaved={setLlmConfig} language={language} />
       )}
     </div>
   );

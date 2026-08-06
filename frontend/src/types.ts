@@ -30,6 +30,16 @@ export interface StatementCard {
   label: string;
   tags: string[];
   parameters: CodeParameter[];
+  explanation_zh: string;
+  explanation_en: string;
+  data_bindings: DataBinding[];
+}
+
+export interface DataBinding {
+  axis: string;
+  column: string;
+  meaning_zh: string;
+  meaning_en: string;
 }
 
 export interface CodeParameter {
@@ -38,7 +48,10 @@ export interface CodeParameter {
   label: string;
   value: string;
   source: string;
-  type: "string" | "number" | "boolean" | "literal";
+  type: "string" | "number" | "boolean" | "literal" | "column" | "column_name";
+  options?: string[];
+  meaning_zh?: string;
+  meaning_en?: string;
   start_line: number;
   start_column: number;
   end_line: number;

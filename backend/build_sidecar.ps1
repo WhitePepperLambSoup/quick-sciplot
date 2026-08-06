@@ -15,6 +15,7 @@ if (-not (Test-Path -LiteralPath $python)) {
     --noconfirm `
     --clean `
     --onefile `
+    --noconsole `
     --name quick-sciplot-backend `
     --distpath (Join-Path $backendRoot "dist") `
     --workpath (Join-Path $backendRoot "build") `

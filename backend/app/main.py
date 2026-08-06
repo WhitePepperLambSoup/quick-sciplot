@@ -330,6 +330,6 @@ def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", opera
         "revision_id": revision_id,
         "export_formats": result.get("formats", []),
         "repair_attempts": repair_attempts,
-        "statements": code_locator.split_statements(code),
+        "statements": code_locator.split_statements(code, ds["summary"]),
         "run": result,
     }

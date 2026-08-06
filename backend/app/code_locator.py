@@ -126,12 +126,64 @@ POSITIONAL_ARGUMENTS = {
     "plt.yscale": ((0, "y 轴刻度"),),
 }
 
+MATPLOTLIB_DATA_CALLS = {
+    "ax.plot",
+    "plt.plot",
+    "ax.scatter",
+    "plt.scatter",
+    "ax.bar",
+    "plt.bar",
+    "ax.barh",
+    "plt.barh",
+    "ax.errorbar",
+    "plt.errorbar",
+    "ax.step",
+    "plt.step",
+}
+
+CALL_ENGLISH = {
+    "绘制折线/曲线": "Draw a line or curve",
+    "绘制散点": "Draw a scatter plot",
+    "绘制柱状图": "Draw a bar chart",
+    "绘制横向柱状图": "Draw a horizontal bar chart",
+    "绘制误差棒图": "Draw an error-bar plot",
+    "绘制直方图": "Draw a histogram",
+    "绘制分布直方图": "Draw a distribution histogram",
+    "绘制热图(矩阵图)": "Draw a heatmap",
+    "绘制热图": "Draw a heatmap",
+    "设置标题": "Set the title",
+    "设置 x 轴标签": "Set the x-axis label",
+    "设置 y 轴标签": "Set the y-axis label",
+    "创建画布与子图": "Create the figure and axes",
+    "创建画布": "Create the figure",
+}
+
+COLUMN_HINTS = {
+    "revenue": ("收入", "revenue or income"),
+    "income": ("收入", "income"),
+    "sales": ("销售额", "sales"),
+    "price": ("价格", "price"),
+    "cost": ("成本", "cost"),
+    "profit": ("利润", "profit"),
+    "user": ("用户数", "user count"),
+    "count": ("计数", "count"),
+    "age": ("年龄", "age"),
+    "time": ("时间", "time"),
+    "date": ("日期", "date"),
+    "year": ("年份", "year"),
+    "month": ("月份", "month"),
+    "temperature": ("温度", "temperature"),
+    "value": ("测量值", "measurement value"),
+    "score": ("得分", "score"),
+    "group": ("分组", "group"),
+}
+
 
 class CodeEditError(ValueError):
     """代码已变化或参数值不符合预期。"""
 
 
-def split_statements(code: str) -> list[dict]:
+def split_statements(code: str, summary: dict | None = None) -> list[dict]:
     """返回按行划分的语句片段列表，附带作用标签。"""
     try:
         tree = ast.parse(code)
@@ -147,6 +199,8 @@ def split_statements(code: str) -> list[dict]:
             end = max(getattr(stmt, "end_lineno", start), start)
             snippet = "\n".join(lines[start - 1 : end])
             labels = _labels_for(stmt)
+            bindings = _data_bindings_for(stmt, code, _summary_columns(summary))
+            explanation_zh, explanation_en = _explanation_for(labels, bindings)
             cards.append(
                 {
                     "start": start,
@@ -154,7 +208,10 @@ def split_statements(code: str) -> list[dict]:
                     "code": snippet,
                     "label": labels[0] if labels else "",
                     "tags": labels,
-                    "parameters": _parameters_for(stmt, code),
+                    "parameters": _parameters_for(stmt, code, _summary_columns(summary)),
+                    "explanation_zh": explanation_zh,
+                    "explanation_en": explanation_en,
+                    "data_bindings": bindings,
                 }
             )
 
@@ -207,14 +264,101 @@ def _call_name(node: ast.AST) -> str:
     return ".".join(reversed(parts))
 
 
-def _parameters_for(stmt: ast.stmt, code: str) -> list[dict[str, Any]]:
+def _summary_columns(summary: dict | None) -> list[str]:
+    return [str(column.get("name")) for column in (summary or {}).get("columns", []) if column.get("name")]
+
+
+def _data_bindings_for(stmt: ast.stmt, code: str, columns: list[str]) -> list[dict[str, Any]]:
+    bindings: list[dict[str, Any]] = []
+    for node in ast.walk(stmt):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _call_name(node.func)
+        slots: list[tuple[str, ast.AST]] = []
+        if call_name in MATPLOTLIB_DATA_CALLS:
+            if len(node.args) > 0:
+                slots.append(("x", node.args[0]))
+            if len(node.args) > 1:
+                slots.append(("y", node.args[1]))
+        elif call_name.endswith((".hist", ".boxplot", ".violinplot")):
+            if node.args:
+                slots.append(("x", node.args[0]))
+        for keyword in node.keywords:
+            if keyword.arg in {"x", "y", "hue", "color", "z"}:
+                slots.append((keyword.arg, keyword.value))
+
+        for axis, value_node in slots:
+            column = _column_from_node(value_node)
+            if column and (not columns or column in columns):
+                bindings.append(_binding(axis, column))
+            elif call_name.startswith("px.") and isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
+                if not columns or value_node.value in columns:
+                    bindings.append(_binding(axis, value_node.value))
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for binding in bindings:
+        key = (binding["axis"], binding["column"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(binding)
+    return unique
+
+
+def _binding(axis: str, column: str) -> dict[str, Any]:
+    meaning_zh, meaning_en = _column_meaning(column)
+    return {
+        "axis": axis,
+        "column": column,
+        "meaning_zh": meaning_zh,
+        "meaning_en": meaning_en,
+    }
+
+
+def _column_meaning(column: str) -> tuple[str, str]:
+    normalized = column.lower().replace("-", "_").replace(" ", "_")
+    for token, meaning in sorted(COLUMN_HINTS.items(), key=lambda item: len(item[0]), reverse=True):
+        if token in normalized:
+            return meaning
+    return column, column
+
+
+def _column_from_node(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name) or node.value.id != "df":
+        return None
+    slice_node = node.slice
+    if isinstance(slice_node, ast.Constant) and isinstance(slice_node.value, str):
+        return slice_node.value
+    return None
+
+
+def _explanation_for(labels: list[str], bindings: list[dict[str, Any]]) -> tuple[str, str]:
+    base_zh = labels[0] if labels else "执行数据处理"
+    base_en = CALL_ENGLISH.get(base_zh, "Run a data-processing step")
+    if not bindings:
+        return base_zh, base_en
+    zh_axes = "，".join(f"{item['axis']} 轴使用 {item['column']}（{item['meaning_zh']}）" for item in bindings)
+    en_axes = ", ".join(f"{item['axis']}-axis uses {item['column']} ({item['meaning_en']})" for item in bindings)
+    return f"{base_zh}；{zh_axes}", f"{base_en}; {en_axes}"
+
+
+def _parameters_for(stmt: ast.stmt, code: str, columns: list[str]) -> list[dict[str, Any]]:
     parameters: list[dict[str, Any]] = []
     for node in ast.walk(stmt):
         if not isinstance(node, ast.Call):
             continue
         call_name = _call_name(node.func)
+        data_names = {"x", "y", "hue", "color", "z"}
         for keyword in node.keywords:
-            if keyword.arg in EDITABLE_ARGUMENTS:
+            if keyword.arg in data_names:
+                parameter = _column_parameter(code, keyword.value, keyword.arg, columns, call_name)
+                if parameter:
+                    parameters.append(parameter)
+                elif keyword.arg in EDITABLE_ARGUMENTS:
+                    parameter = _make_parameter(code, keyword.value, keyword.arg, keyword.arg)
+                    if parameter:
+                        parameters.append(parameter)
+        for keyword in node.keywords:
+            if keyword.arg in EDITABLE_ARGUMENTS and keyword.arg not in data_names:
                 parameter = _make_parameter(code, keyword.value, keyword.arg, keyword.arg)
                 if parameter:
                     parameters.append(parameter)
@@ -223,6 +367,13 @@ def _parameters_for(stmt: ast.stmt, code: str) -> list[dict[str, Any]]:
                 parameter = _make_parameter(code, node.args[index], label, label)
                 if parameter:
                     parameters.append(parameter)
+        if call_name in MATPLOTLIB_DATA_CALLS or call_name.endswith((".hist", ".boxplot", ".violinplot")):
+            slots = [(0, "x 数据"), (1, "y 数据")] if call_name in MATPLOTLIB_DATA_CALLS else [(0, "x 数据")]
+            for index, label in slots:
+                if index < len(node.args):
+                    parameter = _column_parameter(code, node.args[index], label, columns, call_name)
+                    if parameter:
+                        parameters.append(parameter)
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for parameter in parameters:
@@ -232,11 +383,46 @@ def _parameters_for(stmt: ast.stmt, code: str) -> list[dict[str, Any]]:
     return unique
 
 
-def _make_parameter(code: str, node: ast.AST, name: str, label: str) -> dict[str, Any] | None:
+def _column_parameter(
+    code: str,
+    node: ast.AST,
+    name: str,
+    columns: list[str],
+    call_name: str,
+) -> dict[str, Any] | None:
+    column = _column_from_node(node)
+    kind = "column"
+    if column is None and call_name.startswith("px.") and isinstance(node, ast.Constant) and isinstance(node.value, str):
+        column = node.value
+        kind = "column_name"
+    if column is None or (columns and column not in columns):
+        return None
+    label = {"x": "x 数据", "y": "y 数据", "hue": "分组变量", "color": "颜色/分组", "z": "z 数据"}.get(name, name)
+    parameter = _make_parameter(code, node, name, label, allow_expression=True)
+    if parameter is None:
+        return None
+    parameter["type"] = kind
+    parameter["value"] = column
+    parameter["options"] = columns
+    meaning_zh, meaning_en = _column_meaning(column)
+    parameter["meaning_zh"] = meaning_zh
+    parameter["meaning_en"] = meaning_en
+    return parameter
+
+
+def _make_parameter(
+    code: str,
+    node: ast.AST,
+    name: str,
+    label: str,
+    allow_expression: bool = False,
+) -> dict[str, Any] | None:
     try:
         value = ast.literal_eval(node)
     except (ValueError, TypeError, SyntaxError):
-        return None
+        if not allow_expression:
+            return None
+        value = None
 
     if not isinstance(node, ast.expr) or not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
         return None
@@ -313,6 +499,10 @@ def apply_parameter(code: str, parameter: dict[str, Any], value: str) -> str:
 
 def _format_value(value: str, kind: str) -> str:
     raw = value.strip()
+    if kind == "column":
+        return f"df[{value!r}]"
+    if kind == "column_name":
+        return repr(value)
     if kind == "string":
         return repr(value)
     if kind == "boolean":

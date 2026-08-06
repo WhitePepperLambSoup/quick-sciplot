@@ -182,6 +182,19 @@ ax.set_title('My plot')
         code_locator.apply_parameter(code.replace("red", "green"), by_name["color"], "blue")
 
 
+def test_code_locator_axis_bindings():
+    from app import code_locator
+
+    code = "import matplotlib.pyplot as plt\nax.plot(df['year'], df['revenue'])"
+    summary = {"columns": [{"name": "year"}, {"name": "revenue"}]}
+    card = code_locator.split_statements(code, summary)[1]
+    assert card["data_bindings"][0]["column"] == "year"
+    assert card["data_bindings"][0]["meaning_zh"] == "年份"
+    x_parameter = next(parameter for parameter in card["parameters"] if parameter["name"] == "x 数据")
+    patched = code_locator.apply_parameter(code, x_parameter, "revenue")
+    assert "df['revenue']" in patched
+
+
 def test_parameter_endpoint_rerenders():
     from app import code_locator
 
