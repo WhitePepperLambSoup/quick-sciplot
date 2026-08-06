@@ -1,49 +1,57 @@
-# 快捷科研画图（Quick SciPlot）
+# Quick SciPlot
 
-> 上传数据 → 自然语言告诉 AI 要画什么 → 沙箱内自动出图 → 对话微调 → 直观的代码定位面板。
-> An LLM-powered quick scientific plotting app. Import data, describe the figure in plain language, and let AI generate, execute, and refine the plotting code — all through an intuitive UI instead of raw code.
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+An open-source desktop and web application for AI-assisted scientific plotting.
+Import one or more data files, describe the figure in natural language, and refine the result through an intuitive UI with editable code, semantic axis controls, version history, and publication-style presets.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## 特性
+## Features
 
-- **数据导入即摘要**：支持 CSV / TSV / Excel / JSON，自动推断列类型并生成统计摘要（LLM 依据摘要理解数据）
-- **LLM 生成图表**：任意 OpenAI 兼容 API（DeepSeek / OpenAI / 通义 / 智谱 / 本地 vLLM），无需绑定厂商
-- **沙箱执行**：LLM 生成的代码在受限子进程中执行，白名单 import、超时限制，产出 PNG/SVG
-- **多轮对话调整**：改颜色、改轴、加误差棒……自然语言即可，只改相关代码
-- **代码定位工作台**：完整代码行号高亮、语句解释、颜色/透明度/线宽/标题等参数表单，点击参数即可应用并重绘
-- **风格预设**：可选默认、SciencePlots、Nature、IEEE、色盲友好、LovelyPlots、tueplots 等预设；本地有第三方仓库时自动使用，没有时使用内置兜底
-- **版本历史与导出**：SQLite 保存每次生成/编辑/参数调整，可恢复任意成功版本；支持 PNG/SVG/PDF 下载
-- **交互图与自动修复**：明确要求交互图时使用 Plotly，浏览器按需加载交互引擎；生成代码运行失败时自动请求 LLM 修复一次
-- **模型配置面板**：运行中切换 OpenAI 兼容 Base URL、模型、Mock 模式和自动修复次数；API Key 只保存到本地 `.env`
-- **桌面 GUI**：同一套 React WebUI 可直接浏览器运行，也可嵌入 Tauri 2 桌面窗口；桌面壳自动启动本地 FastAPI
-- **多文件与双语界面**：一次导入多个数据文件，左侧切换当前作图文件；支持中文/English 界面切换
-- **变量语义解释**：自动识别 x/y 数据列，显示中英文含义，并提供列选择器直接替换绘图变量
+- Import CSV, TSV, Excel, and JSON files with automatic data summaries.
+- Select multiple files and combine them by rows with a `source_file` provenance column.
+- Generate Matplotlib, Seaborn, or Plotly figures through any OpenAI-compatible API.
+- Choose SciencePlots, Nature, IEEE, LovelyPlots, and built-in fallback styles.
+- Inspect complete plotting code with line highlighting and bilingual data explanations.
+- Change x/y data columns, colors, alpha, line width, labels, and other parameters from forms.
+- Save every generation, edit, parameter change, and restore as an SQLite revision.
+- Export PNG, SVG, PDF, and Plotly JSON.
+- Run without Docker using the bundled worker; Docker is an optional stronger isolation mode.
+- Use the same React WebUI in a browser or inside a Tauri 2 desktop GUI.
+- Switch the interface between Chinese and English.
 
-## 快速开始
+## Architecture
 
-### 1. 后端（Python 3.10+）
+```text
+React + Vite WebUI
+        │ browser or Tauri WebView
+        ▼
+FastAPI local backend
+        ├── LLM provider adapter
+        ├── AST code locator and parameter editor
+        ├── process / Docker / packaged worker sandbox
+        ├── SQLite revision history
+        └── Matplotlib / Seaborn / Plotly renderer
+```
+
+## Quick Start
+
+### Browser development
 
 ```bash
 cd backend
 python -m venv .venv
-# Windows: .venv\Scripts\activate   /   macOS/Linux: source .venv/bin/activate
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-```
 
-配置密钥：复制 `.env.example` 为 `.env` 并填写 LLM 配置（默认 DeepSeek 兼容接口）。
-
-也可以启动后点击右上角“模型设置”填写配置。配置接口只返回脱敏后的密钥状态，不会返回完整 API Key。
-
-无密钥时可用 mock 模式验证全流程：
-
-```bash
-# Windows
+# Copy .env.example to .env and configure an OpenAI-compatible provider.
 $env:LLM_MOCK=1
 python -m uvicorn app.main:app --reload
 ```
 
-### 2. 前端（Node 18+）
+In another terminal:
 
 ```bash
 cd frontend
@@ -51,101 +59,87 @@ npm install
 npm run dev
 ```
 
-打开 http://localhost:5173 ，上传数据文件 → 描述想要画的图 → 查看结果。
+Open `http://localhost:5173`.
 
-### 3. 桌面 GUI（Tauri）
+### Desktop development
 
-开发模式会打开桌面窗口、启动 Vite，并由 Rust 桌面壳自动启动 `backend/.venv` 中的 FastAPI（开发机需要先安装后端依赖）：
+The Tauri shell starts the local FastAPI process and embeds the same React UI:
 
 ```bash
 cd frontend
 npm run desktop:dev
 ```
 
-构建 Windows 桌面安装包时会自动运行 PyInstaller 生成 FastAPI sidecar，最终用户不需要安装 Python。打包版执行 LLM 代码时会优先使用 Docker 沙箱，因此最终用户仍需安装 Docker Desktop 并构建 `quick-sciplot-sandbox:latest` 镜像：
+### Windows installer
+
+Install build dependencies first:
 
 ```bash
-cd ../backend
+cd backend
 pip install -r requirements-build.txt
-cd ../frontend
+cd ..\frontend
 npm run desktop:build
 ```
 
-产物位于 `frontend/src-tauri/target/release/bundle/`，包括 NSIS 和 MSI。PyInstaller 构建依赖可通过 `backend/requirements-build.txt` 安装。
+The NSIS and MSI installers are generated under `frontend/src-tauri/target/release/bundle/`.
+The release build includes a PyInstaller backend sidecar and does not require Python on the target machine.
 
-预设仓库是可选的本地资源。若已经按调研计划克隆了 `presets/SciencePlots` 等仓库，启动后会自动发现；全新 GitHub 克隆没有这些目录时，预设仍可通过内置样式运行。
+### Optional Docker isolation
 
-### 可选 Docker 强隔离
-
-Docker 模式不会默认开启。安装 Docker Desktop 后，在 `backend/` 构建沙箱镜像：
+Docker is not required for the bundled worker mode. To enable stronger container isolation:
 
 ```bash
 cd backend
 docker build -f Dockerfile.sandbox -t quick-sciplot-sandbox:latest .
 ```
 
-然后在模型设置中选择“Docker 强隔离”，或在 `.env` 中设置 `SANDBOX_MODE=docker`。运行时会禁用网络、只读根文件系统、丢弃 Linux capabilities，并限制 CPU、内存和进程数。
+Select Docker in the application settings or set `SANDBOX_MODE=docker` in `.env`.
 
-## API 概览
+## Multiple Files
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/datasets` | 上传数据文件，返回数据集 id 与摘要 |
-| GET | `/api/datasets/{id}` | 获取数据集摘要与预览 |
-| GET | `/api/presets` | 获取风格预设及本地资源状态 |
-| GET | `/api/config` | 获取非敏感模型配置状态 |
-| PUT | `/api/config/llm` | 更新本地模型配置 |
-| POST | `/api/config/test` | 测试当前 LLM 连接 |
-| POST | `/api/plots/generate` | 依据指令 + 数据摘要生成并执行绘图代码 |
-| POST | `/api/plots/edit` | 在已有代码上按指令修改并重新执行 |
-| POST | `/api/plots/run` | 直接执行一段代码（编辑预览用） |
-| POST | `/api/plots/parameter` | 修改定位到的一个参数并重新执行 |
-| GET | `/api/plots/history/{dataset_id}` | 获取数据集的版本历史 |
-| POST | `/api/plots/history/{revision_id}/restore` | 恢复版本并创建新版本 |
-| GET | `/api/plots/revisions/{revision_id}/export/{format}` | 下载 PNG/SVG/PDF/Plotly JSON |
+Multiple imported files remain independent until the user selects them and clicks **Combine selected**. The application concatenates rows, keeps the union of columns, fills unavailable values with missing values, and adds `source_file` so the AI can group or color by origin.
 
-## 目录结构
+The application deliberately does not guess join keys. Relational joins can be added later when the user specifies an explicit key and join type.
 
-```
-├── backend/           # FastAPI 后端
-│   └── app/
-│       ├── main.py        # 应用入口与路由
-│       ├── config.py      # 环境配置
-│       ├── database.py     # SQLite 数据集与版本历史
-│       ├── data_loader.py # 数据导入与摘要
-│       ├── llm.py         # LLM 调用与提示词
-│       ├── preset_registry.py # 风格预设注册与本地资源发现
-│       ├── sandbox.py     # 沙箱执行绘图代码
-│       └── code_locator.py# AST 代码片段、参数定位与安全替换
-├── frontend/          # React + Vite + TypeScript 前端
-│   └── src-tauri/     # Tauri 2 桌面 GUI 外壳与本地 FastAPI 启动器
-├── docs/EVALUATION.md  # 可重复绘图评测说明
-├── presets/           # 本地克隆的风格预设仓库（不入库，见 README 下方说明）
-├── references/        # 本地克隆的参考实现（不入库）
-└── skills/            # 本地克隆的绘图 skill 素材（不入库）
+## Evaluation
+
+Run the deterministic mock evaluation:
+
+```bash
+cd backend
+python evaluate.py --mock --output data/evaluation-report.json
 ```
 
-> `presets/`、`references/`、`skills/` 是本地克隆的第三方仓库（SciencePlots、LovelyPlots、LIDA、PlotCraft、AgentFigureGallery 等），用于离线参考与预设素材，**不随本仓库提交**。如需分发请保留各自上游许可证。
+Compare multiple providers or models with `model_matrix.example.json` and generate an HTML human-review report:
 
-## 安全说明
+```bash
+python evaluate.py --model-config model_matrix.example.json \
+  --output reports/models.json \
+  --human-report reports/models.html
+```
 
-LLM 会生成并执行任意 Python 代码。当前 process 模式为"白名单 import + 超时 + 子进程隔离"的轻量方案；Docker 模式提供额外容器隔离。两种模式都适合本地个人使用，**不要**将本服务暴露到公网。详见 [SECURITY.md](SECURITY.md)。
+## Security
 
-## 路线图
+LLM-generated Python code is executed locally. Process mode provides static import checks, forbidden-call checks, a separate process, and timeouts. Docker mode additionally disables networking, uses a read-only root filesystem, drops capabilities, runs as a non-root user, and applies resource limits.
 
-- [x] M0 调研：生态扫描与预设仓库收集
-- [x] M1 最小闭环：数据导入 → LLM 生成 → 沙箱渲染 → 对话调整
-- [x] M2 预设系统：风格包接入与选择、第三方风格缺失时内置兜底
-- [x] M3 代码定位增强：完整代码行高亮、参数表单化、直接编辑与重绘
-- [x] M4a 版本历史、版本恢复、PNG/SVG/PDF 导出
-- [x] M4b Plotly 交互图支持、一次错误自动修复
-- [x] M5a 模型配置面板、连接测试、可重复 mock/真实模型评测入口
-- [x] M5b 可选 Docker 强隔离执行器、评测结构指标与报告导出
-- [ ] M5c 多模型真实质量基准与人工评测流程
-- [x] M6 Tauri 桌面 GUI 外壳（源码模式）
-- [x] M7 PyInstaller sidecar 与 Windows NSIS/MSI 安装包
-- [x] M8 多文件导入、变量语义解释、中文/English 界面切换
+Do not expose the current local FastAPI service to the public internet. See [SECURITY.md](SECURITY.md).
 
-## 许可证
+## Repository Layout
 
-[MIT](LICENSE) © pic contributors
+- `backend/`: FastAPI service, data processing, LLM adapter, sandbox, tests, and sidecar build scripts.
+- `frontend/`: React + Vite WebUI and Tauri 2 desktop shell in `src-tauri/`.
+- `docs/`: research plan and evaluation documentation.
+- `presets/`, `references/`, `skills/`: optional local third-party repositories, ignored by Git.
+
+## Tests
+
+```bash
+cd backend
+python -m pytest tests -q
+```
+
+The frontend is checked with `npm run build`.
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
