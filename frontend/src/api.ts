@@ -28,6 +28,14 @@ export async function uploadDatasets(files: File[]): Promise<DatasetInfo[]> {
   throw new Error("服务器没有返回导入的数据集");
 }
 
+export async function combineDatasets(datasetIds: string[], name?: string): Promise<DatasetInfo> {
+  return request<DatasetInfo>("/datasets/combine", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataset_ids: datasetIds, name }),
+  });
+}
+
 export async function listPresets(): Promise<Preset[]> {
   const data = await request<{ presets: Preset[] }>("/presets");
   return data.presets;

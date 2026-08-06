@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   applyParameter,
+  combineDatasets,
   editPlot,
   getConfig,
   generatePlot,
@@ -271,6 +272,7 @@ export default function App() {
   const ui = UI_TEXT[language];
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
+  const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
   const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS);
   const [selectedPreset, setSelectedPreset] = useState("default");
   const [history, setHistory] = useState<RevisionSummary[]>([]);
@@ -338,11 +340,31 @@ export default function App() {
       const loaded = await uploadDatasets(files);
       const ds = loaded[0];
       setDatasets((current) => [...current, ...loaded]);
+      setSelectedDatasetIds(loaded.map((item) => item.id));
       setDataset(ds);
       setResult(null);
-      setMessages([{ role: "assistant", content: `已导入 ${loaded.length} 个数据文件，当前使用“${ds.name || "未命名文件"}”：${ds.summary.shape.rows} 行 × ${ds.summary.shape.cols} 列。` }]);
+      setMessages([{ role: "assistant", content: `${ui.imported} ${loaded.length} ${ui.files}，${ui.current} “${ds.name || ui.unnamed}”：${ds.summary.shape.rows} ${ui.rows} × ${ds.summary.shape.cols} ${ui.columns}。` }]);
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const combineSelected = async () => {
+    if (selectedDatasetIds.length < 2 || busy) return;
+    setBusy(true);
+    try {
+      const combined = await combineDatasets(selectedDatasetIds);
+      setDatasets((current) => [...current, combined]);
+      setSelectedDatasetIds([combined.id]);
+      setDataset(combined);
+      setResult(null);
+      setEditorCode("");
+      setActiveCard(null);
+      setMessages((m) => [...m, { role: "assistant", content: language === "zh" ? `已将 ${selectedDatasetIds.length} 个文件按行拼接，新增来源列 source_file。` : `Combined ${selectedDatasetIds.length} files by rows with a source_file column.` }]);
+    } catch (error) {
+      setMessages((m) => [...m, { role: "assistant", content: String(error), error: true }]);
     } finally {
       setBusy(false);
     }
@@ -472,7 +494,7 @@ export default function App() {
             <div className="dataset-files">
               <div className="dataset-files-heading">{ui.importedFiles}</div>
               {datasets.map((item) => (
-                <button
+                <div
                   key={item.id}
                   className={`dataset-file${item.id === dataset?.id ? " active" : ""}`}
                   onClick={() => {
@@ -481,13 +503,24 @@ export default function App() {
                     setEditorCode("");
                     setActiveCard(null);
                   }}
-                  disabled={busy}
                   title={item.name || item.id}
                 >
+                  <input
+                    type="checkbox"
+                    checked={selectedDatasetIds.includes(item.id)}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => {
+                      setSelectedDatasetIds((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id));
+                    }}
+                    disabled={busy}
+                  />
                   <span>{item.name || ui.unnamed}</span>
                   <small>{item.summary.shape.rows} × {item.summary.shape.cols}</small>
-                </button>
+                </div>
               ))}
+              <button className="combine-button" onClick={() => void combineSelected()} disabled={busy || selectedDatasetIds.length < 2}>
+                {language === "zh" ? `合并选中文件（${selectedDatasetIds.length}）` : `Combine selected (${selectedDatasetIds.length})`}
+              </button>
             </div>
           )}
           <div className="preset-picker">

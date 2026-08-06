@@ -9,6 +9,7 @@ import pandas as pd
 
 ALLOWED_EXTS = {".csv", ".tsv", ".txt", ".xlsx", ".xls", ".json"}
 MAX_ROWS_FOR_STATS = 200_000
+MAX_ROWS_FOR_COMBINE = 1_000_000
 
 
 class DataError(Exception):
@@ -80,14 +81,38 @@ def import_dataset(data_dir: Path, filename: str, content: bytes) -> dict:
     if df.shape[0] > MAX_ROWS_FOR_STATS:
         df = df.sample(MAX_ROWS_FOR_STATS, random_state=42)
 
+    raw_path.unlink(missing_ok=True)
+    return create_dataset(data_dir, df, filename)
+
+
+def create_dataset(data_dir: Path, df: pd.DataFrame, name: str) -> dict:
+    if df.shape[0] == 0:
+        raise DataError("文件为空")
+    data_dir.mkdir(parents=True, exist_ok=True)
     dataset_id = uuid.uuid4().hex
     csv_path = data_dir / f"{dataset_id}.csv"
     df.to_csv(csv_path, index=False)
-    raw_path.unlink(missing_ok=True)
-
     summary = build_summary(df)
     summary["columns"] = _sanitize(summary["columns"])
-    return {"id": dataset_id, "path": str(csv_path), "summary": summary}
+    return {"id": dataset_id, "name": name, "path": str(csv_path), "summary": summary}
+
+
+def combine_datasets(data_dir: Path, datasets: list[dict]) -> dict:
+    if len(datasets) < 2:
+        raise DataError("至少选择两个文件进行合并")
+    frames = []
+    for dataset in datasets:
+        path = Path(dataset["path"])
+        if not path.is_file():
+            raise DataError(f"数据文件不存在: {dataset.get('name', path.name)}")
+        frame = pd.read_csv(path)
+        source_name = dataset.get("name") or path.stem
+        frame.insert(0, "source_file", source_name)
+        frames.append(frame)
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    if combined.shape[0] > MAX_ROWS_FOR_COMBINE:
+        raise DataError(f"合并后超过 {MAX_ROWS_FOR_COMBINE:,} 行限制，请先筛选数据")
+    return create_dataset(data_dir, combined, f"合并数据（{len(datasets)} 个文件）")
 
 
 def _sanitize(obj):

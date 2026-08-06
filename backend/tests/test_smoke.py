@@ -53,6 +53,12 @@ def test_upload_multiple_datasets():
     assert len(datasets) == 2
     assert [item["name"] for item in datasets] == ["first.csv", "second.csv"]
 
+    combined = client.post("/api/datasets/combine", json={"dataset_ids": [item["id"] for item in datasets]})
+    assert combined.status_code == 200, combined.text
+    combined_data = combined.json()
+    assert combined_data["summary"]["shape"]["rows"] == 7
+    assert combined_data["summary"]["columns"][0]["name"] == "source_file"
+
 
 def test_generate_bar():
     ds_id = upload_dataset()["id"]

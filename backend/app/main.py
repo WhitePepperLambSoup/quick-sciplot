@@ -64,6 +64,11 @@ class LLMConfigRequest(BaseModel):
     sandbox_mode: str | None = None
 
 
+class CombineRequest(BaseModel):
+    dataset_ids: list[str]
+    name: str | None = None
+
+
 def _get_dataset(dataset_id: str) -> dict:
     ds = DATASETS.get(dataset_id)
     if ds is None:
@@ -116,6 +121,25 @@ async def upload_dataset(
     if len(datasets) == 1:
         response.update({"id": datasets[0]["id"], "summary": datasets[0]["summary"]})
     return response
+
+
+@app.post("/api/datasets/combine", summary="将多个数据集按行拼接为一个数据集")
+def combine_datasets(req: CombineRequest):
+    unique_ids = list(dict.fromkeys(req.dataset_ids))
+    if len(unique_ids) < 2:
+        raise HTTPException(status_code=400, detail="至少选择两个文件")
+    if len(unique_ids) > 20:
+        raise HTTPException(status_code=413, detail="一次最多合并 20 个文件")
+    selected = [_get_dataset(dataset_id) for dataset_id in unique_ids]
+    try:
+        combined = data_loader.combine_datasets(settings.data_dir, selected)
+    except data_loader.DataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if req.name and req.name.strip():
+        combined["name"] = req.name.strip()
+    DATASETS[combined["id"]] = combined
+    database.save_dataset(combined)
+    return {"id": combined["id"], "name": combined["name"], "summary": combined["summary"]}
 
 
 @app.get("/api/datasets/{dataset_id}", summary="获取数据集摘要")
