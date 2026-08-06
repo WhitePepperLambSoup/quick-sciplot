@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+[![CI](https://github.com/WhitePepperLambSoup/quick-sciplot/actions/workflows/ci.yml/badge.svg)](https://github.com/WhitePepperLambSoup/quick-sciplot/actions/workflows/ci.yml)
+
 Quick SciPlot 是一个开源的 AI 辅助科研画图桌面/网页应用。
 用户可以导入一个或多个数据文件，用自然语言描述想要的图，然后通过直观界面调整图像、代码、变量和科研风格。
 

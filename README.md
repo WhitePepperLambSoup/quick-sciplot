@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+[![CI](https://github.com/WhitePepperLambSoup/quick-sciplot/actions/workflows/ci.yml/badge.svg)](https://github.com/WhitePepperLambSoup/quick-sciplot/actions/workflows/ci.yml)
+
 An open-source desktop and web application for AI-assisted scientific plotting.
 Import one or more data files, describe the figure in natural language, and refine the result through an intuitive UI with editable code, semantic axis controls, version history, and publication-style presets.
 
