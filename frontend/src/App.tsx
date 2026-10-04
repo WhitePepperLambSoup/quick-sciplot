@@ -105,7 +105,10 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false;
-    let attempts = 0;
+    // The packaged one-file backend unpacks itself on every launch and can take
+    // well over 30 seconds on a busy machine, so keep retrying for a while.
+    const startedAt = Date.now();
+    const BACKEND_STARTUP_TIMEOUT_MS = 180_000;
     let timer: number | undefined;
     const loadBackendMetadata = async () => {
       try {
@@ -123,8 +126,16 @@ export default function App() {
           setSelectedDatasetIds([savedDatasets[0].id]);
         }
       } catch {
-        if (!disposed && attempts++ < 20) {
-          timer = window.setTimeout(loadBackendMetadata, 1000);
+        if (disposed) return;
+        if (Date.now() - startedAt < BACKEND_STARTUP_TIMEOUT_MS) {
+          timer = window.setTimeout(loadBackendMetadata, 1500);
+        } else {
+          addToast(
+            "error",
+            language === "zh"
+              ? "无法连接本地后端服务，请重启应用后重试"
+              : "Cannot reach the local backend; restart the app and try again",
+          );
         }
       }
     };

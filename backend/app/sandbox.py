@@ -179,9 +179,19 @@ def _build_script(
     preamble = f"""# -*- coding: utf-8 -*-
 import os as _os
 import sys as _sys
+import logging as _logging
+import warnings as _warnings
 _os.environ.setdefault("MPLBACKEND", "Agg")
 import matplotlib
 matplotlib.use("Agg")
+
+# 没有中文字体的环境（Linux、Docker 镜像）里，下面的字体回退列表会让 matplotlib
+# 为每次字体查找输出 findfont 日志和缺字形警告，很快超过日志上限而被终止，
+# 也会淹没真正的报错信息（自动修复依赖它），因此静默这两类输出。
+_logging.getLogger("matplotlib.font_manager").setLevel(_logging.ERROR)
+_warnings.filterwarnings("ignore", message=r"Glyph .* missing from (current )?font")
+del _logging
+del _warnings
 
 # 嵌入出版级 TrueType 矢量字体 (Type 42)，满足 IEEE/Nature 论文印刷标准
 matplotlib.rcParams["pdf.fonttype"] = 42

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, RunEvent, State};
 
 struct BackendProcess(Mutex<Option<Child>>);
@@ -12,6 +12,7 @@ struct BackendProcess(Mutex<Option<Child>>);
 struct ConfigDir(PathBuf);
 
 const BACKEND_ADDR: &str = "127.0.0.1:8000";
+const BACKEND_STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
 
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -122,15 +123,7 @@ fn launch_backend(
         .spawn();
 
     match result {
-        Ok(mut child) => {
-            if wait_for_backend(&mut child) {
-                Some(child)
-            } else {
-                terminate_child(&mut child);
-                eprintln!("Quick SciPlot backend did not become ready at {BACKEND_ADDR}");
-                None
-            }
-        }
+        Ok(child) => Some(child),
         Err(error) => {
             eprintln!("Quick SciPlot backend could not start: {error}");
             None
@@ -138,21 +131,47 @@ fn launch_backend(
     }
 }
 
-fn wait_for_backend(child: &mut Child) -> bool {
-    let address: SocketAddr = match BACKEND_ADDR.parse() {
-        Ok(address) => address,
-        Err(_) => return false,
+/// Log whether the backend comes up, without blocking window creation.
+///
+/// The PyInstaller one-file sidecar unpacks itself on every launch, which can
+/// take well over 30 seconds on a busy machine or on first launch while the
+/// antivirus scans it.  The shell used to block for ~30 seconds and then kill
+/// a backend that was merely slow, leaving the app without a backend; the
+/// frontend keeps retrying instead, so a slow start only delays the UI.
+fn watch_backend_startup(app: AppHandle) {
+    thread::spawn(move || {
+        let Ok(address) = BACKEND_ADDR.parse::<SocketAddr>() else {
+            return;
+        };
+        let started = Instant::now();
+        while started.elapsed() < BACKEND_STARTUP_TIMEOUT {
+            if backend_exited(&app) {
+                eprintln!("Quick SciPlot backend exited before it became ready");
+                return;
+            }
+            if TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+        eprintln!(
+            "Quick SciPlot backend is still not ready at {BACKEND_ADDR} after {}s",
+            BACKEND_STARTUP_TIMEOUT.as_secs()
+        );
+    });
+}
+
+fn backend_exited(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<BackendProcess>() else {
+        return true;
     };
-    for _ in 0..150 {
-        if let Ok(Some(_)) = child.try_wait() {
-            return false;
-        }
-        if TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok() {
-            return child.try_wait().ok().flatten().is_none();
-        }
-        thread::sleep(Duration::from_millis(100));
+    let Ok(mut guard) = state.0.lock() else {
+        return true;
+    };
+    match guard.as_mut() {
+        Some(child) => matches!(child.try_wait(), Ok(Some(_))),
+        None => true,
     }
-    false
 }
 
 fn is_port_available(address: SocketAddr) -> bool {
@@ -194,13 +213,7 @@ fn find_sidecar(app: &AppHandle) -> Option<PathBuf> {
 fn stop_backend(state: &BackendProcess) {
     if let Ok(mut process) = state.0.lock() {
         if let Some(mut child) = process.take() {
-            #[cfg(target_os = "windows")]
-            let _ = Command::new("taskkill")
-                .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                .status();
-            #[cfg(not(target_os = "windows"))]
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_child(&mut child);
         }
     }
 }
@@ -250,7 +263,11 @@ pub fn run() {
         .setup(|app| {
             let backend = start_backend(app.handle());
             app.manage(ConfigDir(app_data_root(app.handle()).join("config")));
+            let started = backend.is_some();
             app.manage(BackendProcess(Mutex::new(backend)));
+            if started {
+                watch_backend_startup(app.handle().clone());
+            }
             Ok(())
         });
 

@@ -333,6 +333,53 @@ def test_interactive_adjustments_reject_non_finite_numbers(bad_value):
         visual_manipulator.adjust_ylim(code, 0, bad_value)
 
 
+# ------------------------------------------------------------- missing fonts
+
+
+def test_render_survives_missing_fonts_without_flooding_the_log(tmp_path):
+    """Without CJK fonts (Linux, the Docker image) findfont spam used to exceed the log cap."""
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text("year,revenue,users\n2020,100,1200\n2021,150,1800\n2022,210,2600\n", encoding="utf-8")
+    code = llm._MOCK_HIST.replace("['SimHei', 'Microsoft YaHei']", "['NoSuchFontA', 'NoSuchFontB']")
+    assert "NoSuchFontA" in code
+
+    result = sandbox.run_plot_code(code, csv_path, tmp_path / "output")
+
+    assert result["success"], result["stderr"][-500:]
+    assert "findfont" not in result["stderr"]
+    assert "missing from font" not in result["stderr"]
+
+
+# ------------------------------------------------------------ packaged worker
+
+
+def _write_script(tmp_path, body: str, bom: bool = False):
+    script = tmp_path / "script.py"
+    script.write_text(body, encoding="utf-8-sig" if bom else "utf-8")
+    return script
+
+
+def test_packaged_worker_reports_exceptions_on_stderr_instead_of_crashing(tmp_path, capsys):
+    import run_server
+
+    script = _write_script(tmp_path, "raise ValueError('bad column name')\n")
+
+    assert run_server.run_worker(str(script)) == 1
+    stderr = capsys.readouterr().err
+    assert "ValueError: bad column name" in stderr
+    assert "Traceback" in stderr
+
+
+def test_packaged_worker_handles_system_exit_and_success(tmp_path, capsys):
+    import run_server
+
+    assert run_server.run_worker(str(_write_script(tmp_path, "raise SystemExit('no numeric columns')\n"))) == 1
+    assert "no numeric columns" in capsys.readouterr().err
+    assert run_server.run_worker(str(_write_script(tmp_path, "raise SystemExit(3)\n"))) == 3
+    assert run_server.run_worker(str(_write_script(tmp_path, "print('ok')\n", bom=True))) == 0
+    assert "ok" in capsys.readouterr().out
+
+
 # ------------------------------------------------------------------------ Docker
 
 

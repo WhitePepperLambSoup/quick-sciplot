@@ -30,6 +30,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Packaged Windows desktop builds could not reach the backend: the `http://tauri.localhost` origin was not allowed by CORS, and the cross-site session cookie was dropped by the WebView. The desktop app now gets the session token from the Tauri shell and sends it as a header.
+- The desktop shell killed the backend if it was not ready within about 30 seconds, although the one-file sidecar can take longer to unpack on a busy machine or first launch. The window now opens immediately and the UI keeps retrying for up to three minutes.
+- In packaged builds, any error in the plotting code opened a modal "Unhandled exception in script" dialog and hung until the sandbox timeout, hiding the traceback from automatic repair. The worker now reports errors on stderr and exits.
+- On systems without the configured CJK fonts (Linux, the Docker image), font-lookup warnings flooded the renderer log until it hit the size limit and the plot was killed. These warnings are now silenced.
 - Requests whose Host header is not a local name are rejected, closing a DNS-rebinding path to the session cookie (`ALLOWED_HOSTS` to configure).
 - A plot finishing while another was still rendering could delete the other plot's output directory.
 - Docker containers kept running after a timeout or output-limit violation; large scripts exceeded the Windows command-line limit.
@@ -47,6 +50,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The desktop app uses the Docker sandbox by default. Without Docker, enable the bundled worker for trusted local use by adding `SANDBOX_MODE=process` and `ALLOW_UNSAFE_PROCESS_SANDBOX=1` to `%APPDATA%\com.quicksciplot.desktop\config\.env`.
 - The Docker execution path is not yet covered by automated tests against a running Docker daemon.
+- The Docker sandbox image does not include CJK fonts, so Chinese labels render as boxes there; the bundled worker uses the fonts installed on Windows.
+- The one-file backend unpacks itself on every launch, so the desktop app can take 10–40 seconds to become ready.
 - This is a single-user local tool: there are no per-user accounts or object-level permissions, so do not expose the service to other users or networks.
 
 ## [0.1.0] - 2026-08-07
