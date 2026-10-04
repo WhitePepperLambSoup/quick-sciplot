@@ -17,12 +17,15 @@ CALL_LABELS = {
     "plt.barh": "绘制横向柱状图",
     "ax.errorbar": "绘制误差棒图",
     "plt.errorbar": "绘制误差棒图",
+    "ax.fill_between": "绘制误差/置信区间阴影",
+    "plt.fill_between": "绘制误差/置信区间阴影",
     "ax.imshow": "绘制热图(矩阵图)",
     "plt.imshow": "绘制热图(矩阵图)",
     "ax.contourf": "绘制等高线填充图",
     "ax.hist": "绘制直方图",
     "plt.hist": "绘制直方图",
     "sns.histplot": "绘制分布直方图",
+    "sns.kdeplot": "绘制核密度估计曲线",
     "ax.boxplot": "绘制箱线图",
     "plt.boxplot": "绘制箱线图",
     "sns.boxplot": "绘制箱线图",
@@ -32,6 +35,8 @@ CALL_LABELS = {
     "sns.lineplot": "绘制折线图",
     "sns.barplot": "绘制柱状统计图",
     "sns.heatmap": "绘制热图",
+    "ax.twinx": "创建双 Y 轴",
+    "plt.twinx": "创建双 Y 轴",
     "ax.set_title": "设置标题",
     "plt.title": "设置标题",
     "ax.set_xlabel": "设置 x 轴标签",
@@ -46,6 +51,10 @@ CALL_LABELS = {
     "ax.set_ylim": "设置 y 轴范围",
     "ax.axhline": "添加水平参考线",
     "ax.axvline": "添加垂直参考线",
+    "ax.axhspan": "添加水平高亮区间",
+    "ax.axvspan": "添加垂直高亮区间",
+    "ax.tick_params": "配置坐标刻度样式",
+    "ax.grid": "配置网格线",
     "ax.annotate": "添加注释",
     "ax.text": "添加文字",
     "plt.annotate": "添加注释",
@@ -76,6 +85,8 @@ KEYWORD_LABELS = {
     "figsize": "画布尺寸",
     "log": "对数刻度",
     "rotate": "刻度旋转",
+    "cmap": "色彩映射方案",
+    "annot": "单元格数值标注",
 }
 
 PANDAS_LABELS = {
@@ -94,23 +105,36 @@ PANDAS_LABELS = {
 
 EDITABLE_ARGUMENTS = {
     "alpha",
+    "annot",
     "bins",
     "capsize",
+    "capthick",
+    "cbar",
+    "cmap",
     "color",
+    "dashes",
     "edgecolor",
     "facecolor",
     "figsize",
+    "fmt",
     "fontsize",
+    "inner",
     "kde",
     "label",
     "linewidth",
     "linestyle",
     "marker",
     "markersize",
+    "notch",
     "pad",
     "palette",
     "rotation",
     "s",
+    "showmeans",
+    "showmedians",
+    "split",
+    "vmin",
+    "vmax",
 }
 
 POSITIONAL_ARGUMENTS = {
@@ -137,6 +161,8 @@ MATPLOTLIB_DATA_CALLS = {
     "plt.barh",
     "ax.errorbar",
     "plt.errorbar",
+    "ax.fill_between",
+    "plt.fill_between",
     "ax.step",
     "plt.step",
 }
@@ -147,10 +173,13 @@ CALL_ENGLISH = {
     "绘制柱状图": "Draw a bar chart",
     "绘制横向柱状图": "Draw a horizontal bar chart",
     "绘制误差棒图": "Draw an error-bar plot",
+    "绘制误差/置信区间阴影": "Draw confidence/error band",
     "绘制直方图": "Draw a histogram",
     "绘制分布直方图": "Draw a distribution histogram",
+    "绘制核密度估计曲线": "Draw kernel density estimate (KDE)",
     "绘制热图(矩阵图)": "Draw a heatmap",
     "绘制热图": "Draw a heatmap",
+    "创建双 Y 轴": "Create twin Y-axis",
     "设置标题": "Set the title",
     "设置 x 轴标签": "Set the x-axis label",
     "设置 y 轴标签": "Set the y-axis label",
@@ -174,8 +203,24 @@ COLUMN_HINTS = {
     "month": ("月份", "month"),
     "temperature": ("温度", "temperature"),
     "value": ("测量值", "measurement value"),
+    "val": ("测量值", "measurement value"),
     "score": ("得分", "score"),
     "group": ("分组", "group"),
+    "treatment": ("处理组", "treatment group"),
+    "control": ("对照组", "control group"),
+    "sample": ("样本", "sample ID"),
+    "dose": ("剂量", "dose"),
+    "conc": ("浓度", "concentration"),
+    "concentration": ("浓度", "concentration"),
+    "od600": ("吸光度 OD600", "OD600 optical density"),
+    "od": ("吸光度", "optical density"),
+    "log2fc": ("Log2差异倍数", "Log2 fold change"),
+    "fc": ("差异倍数", "fold change"),
+    "pvalue": ("P值", "p-value"),
+    "pval": ("P值", "p-value"),
+    "gene": ("基因", "gene name"),
+    "protein": ("蛋白", "protein name"),
+    "strain": ("品系/株系", "strain"),
 }
 
 
@@ -497,14 +542,25 @@ def apply_parameter(code: str, parameter: dict[str, Any], value: str) -> str:
     return code[:start] + replacement + code[end:]
 
 
+
 def _format_value(value: str, kind: str) -> str:
     raw = value.strip()
     if kind == "column":
+        if raw.startswith("df[") and raw.endswith("]"):
+            inner = raw[3:-1].strip().strip("'\"")
+            return f"df[{inner!r}]"
         return f"df[{value!r}]"
     if kind == "column_name":
-        return repr(value)
+        if raw.startswith("df[") and raw.endswith("]"):
+            raw = raw[3:-1].strip().strip("'\"")
+        return repr(raw)
     if kind == "string":
-        return repr(value)
+        if len(raw) >= 2 and (
+            (raw.startswith("'") and raw.endswith("'"))
+            or (raw.startswith('"') and raw.endswith('"'))
+        ):
+            raw = raw[1:-1]
+        return repr(raw)
     if kind == "boolean":
         if raw.lower() in {"true", "1", "yes"}:
             return "True"

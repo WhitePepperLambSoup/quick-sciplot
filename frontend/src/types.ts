@@ -75,6 +75,19 @@ export interface PlotlyFigure {
   frames?: unknown[];
 }
 
+export interface PlotMeta {
+  xlim: [number, number];
+  ylim: [number, number];
+  bbox: [number, number, number, number]; // [left, bottom, width, height] normalized
+}
+
+export interface InspectedElements {
+  hlines: number[];
+  vlines: number[];
+  ylim: [number, number] | null;
+  xlim: [number, number] | null;
+}
+
 export interface PlotResult {
   code: string;
   preset: string;
@@ -82,6 +95,8 @@ export interface PlotResult {
   export_formats: string[];
   repair_attempts: number;
   statements: StatementCard[];
+  meta?: PlotMeta;
+  inspected?: InspectedElements;
   run: PlotRun;
 }
 
@@ -103,6 +118,7 @@ export interface LLMConfig {
   auto_repair_attempts: number;
   sandbox_timeout: number;
   sandbox_mode: "process" | "docker";
+  send_data_values: boolean;
 }
 
 export interface ConnectionResult {
@@ -127,4 +143,20 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   error?: boolean;
+}
+
+export interface StatAnnotationRequest {
+  dataset_id: string;
+  code: string;
+  group_col: string;
+  val_col: string;
+  pairs: [string, string][];
+  test_type?: "t-test" | "mann-whitney" | "anova";
+}
+
+export interface CritiqueResult {
+  score: number;
+  suggestions: string[];
+  has_overlap: boolean;
+  legend_ok: boolean;
 }

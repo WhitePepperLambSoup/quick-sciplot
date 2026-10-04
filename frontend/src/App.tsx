@@ -1,53 +1,45 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   applyParameter,
   combineDatasets,
+  critiquePlot,
   editPlot,
   getConfig,
   generatePlot,
   listHistory,
   listPresets,
+  deleteDataset,
+  listDatasets,
   restoreRevision,
   runCode,
-  testLLMConnection,
-  updateLLMConfig,
   uploadDatasets,
+  interactiveAdjustPlot,
 } from "./api";
+import { ChatPanel } from "./components/ChatPanel";
+import { CodeWorkbench } from "./components/CodeWorkbench";
+import { DataPanel } from "./components/DataPanel";
+import { ComplianceModal } from "./components/ComplianceModal";
+import { ComposerModal } from "./components/ComposerModal";
+import { Header } from "./components/Header";
+import { MimicModal } from "./components/MimicModal";
+import { StatsModal } from "./components/StatsModal";
+import type { Language } from "./components/ParameterInput";
+import { PreviewCanvas } from "./components/PreviewCanvas";
+import { SettingsDialog } from "./components/SettingsDialog";
+import { ToastContainer, type ToastMessage } from "./components/Toast";
 import type {
   ChatMessage,
   CodeParameter,
-  ConnectionResult,
   DatasetInfo,
   LLMConfig,
   PlotResult,
-  PlotlyFigure,
   Preset,
   RevisionSummary,
   StatementCard,
 } from "./types";
 
-type Language = "zh" | "en";
-
-const UI_TEXT = {
-  zh: {
-    subtitle: "LLM 驱动的快捷科研画图", modelConfigured: "已配置", mockMode: "Mock 模式", noApi: "未配置 API", settings: "模型设置", importData: "导入数据", data: "数据", importedFiles: "已导入文件（选择当前作图）", unnamed: "未命名文件", style: "图表风格", rows: "行", columns: "列", column: "列名", type: "类型", missing: "缺失", stats: "统计", importHint: "点击右上角“导入数据”，支持 CSV / TSV / Excel / JSON。", preview: "预览", previewHint: "在右侧描述要画的图，结果会显示在这里。", chat: "AI 对话", placeholder: "例如：画柱状图，对比每年的 revenue，加标题", send: "发送", generating: "生成中…", codeLocator: "代码定位", codeHint: "点击片段定位源码；参数失焦后自动应用并重绘", fullCode: "完整代码（可直接编辑）", runCode: "运行完整代码", running: "执行中…", export: "导出：", history: "版本历史", firstVersion: "生成第一张图后会自动记录版本。", language: "EN", imported: "已导入", current: "当前使用", files: "个数据文件", restoreSuccess: "已恢复历史版本并生成新版本 ✓",
-  },
-  en: {
-    subtitle: "LLM-powered quick scientific plotting", modelConfigured: "Configured", mockMode: "Mock mode", noApi: "API not configured", settings: "Model settings", importData: "Import data", data: "Data", importedFiles: "Imported files (select active dataset)", unnamed: "Unnamed file", style: "Figure style", rows: "rows", columns: "columns", column: "Column", type: "Type", missing: "Missing", stats: "Stats", importHint: "Click “Import data”. CSV / TSV / Excel / JSON are supported.", preview: "Preview", previewHint: "Describe the figure on the right to see the result here.", chat: "AI chat", placeholder: "Example: compare yearly revenue with a bar chart and add a title", send: "Send", generating: "Generating…", codeLocator: "Code locator", codeHint: "Click a statement to locate it; parameter changes redraw automatically", fullCode: "Full code (editable)", runCode: "Run full code", running: "Running…", export: "Export:", history: "Version history", firstVersion: "Versions will appear after the first plot.", language: "中文", imported: "Imported", current: "Active", files: "datasets", restoreSuccess: "Version restored as a new revision ✓",
-  },
-} as const;
-
-interface ParameterInputProps {
-  parameter: CodeParameter;
-  disabled: boolean;
-  onApply: (parameter: CodeParameter, value: string) => Promise<void>;
-  language: Language;
-}
-
-const MODEL_OPTIONS = ["deepseek-chat", "deepseek-reasoner", "gpt-4o-mini", "qwen-plus", "glm-4.5", "gemini-2.0-flash"];
-
 const FALLBACK_PRESETS: Preset[] = [
-  { id: "default", name: "默认", description: "Matplotlib 默认风格，适合快速预览。", source: "内置", source_url: "", category: "基础", local_available: false, has_fallback: true },
+  { id: "default", name: "默认 Matplotlib", description: "Matplotlib 默认风格，适合快速预览。", source: "内置", source_url: "", category: "基础", local_available: false, has_fallback: true },
   { id: "science", name: "SciencePlots 科研", description: "简洁、细线、内向刻度，适合一般科研论文。", source: "SciencePlots", source_url: "", category: "论文", local_available: false, has_fallback: true },
   { id: "science-nature", name: "Nature 期刊", description: "Nature 论文常用的紧凑无衬线风格。", source: "SciencePlots", source_url: "", category: "期刊", local_available: false, has_fallback: true },
   { id: "science-ieee", name: "IEEE 期刊", description: "适合 IEEE 单栏论文的紧凑黑白友好风格。", source: "SciencePlots", source_url: "", category: "期刊", local_available: false, has_fallback: true },
@@ -64,204 +56,8 @@ const DEFAULT_LLM_CONFIG: LLMConfig = {
   api_key_masked: "",
   auto_repair_attempts: 1,
   sandbox_timeout: 60,
-  sandbox_mode: "process",
-};
-
-function ParameterInput({ parameter, disabled, onApply, language }: ParameterInputProps) {
-  const [value, setValue] = useState(parameter.value);
-
-  useEffect(() => {
-    setValue(parameter.value);
-  }, [parameter.value]);
-
-  const commit = () => {
-    if (!disabled && value !== parameter.value) {
-      void onApply(parameter, value);
-    }
-  };
-
-  const isColumn = (parameter.type === "column" || parameter.type === "column_name") && parameter.options?.length;
-
-  return (
-    <label className="parameter-field">
-      <span>{language === "en" ? parameter.name : parameter.label}</span>
-      {isColumn ? (
-        <select
-          value={value}
-          disabled={disabled}
-          title={`源码位置 L${parameter.start_line}`}
-          onChange={(e) => {
-            setValue(e.target.value);
-            void onApply(parameter, e.target.value);
-          }}
-        >
-          {parameter.options?.map((option) => <option key={option} value={option}>{option}</option>)}
-        </select>
-      ) : (
-        <input
-          type={parameter.type === "number" ? "number" : "text"}
-          value={value}
-          disabled={disabled}
-          title={`源码位置 L${parameter.start_line}`}
-          onChange={(e) => setValue(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-        />
-      )}
-    </label>
-  );
-}
-
-function InteractivePlot({ figure }: { figure: PlotlyFigure }) {
-  const plotRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const element = plotRef.current;
-    if (!element) return;
-    let disposed = false;
-    void import("plotly.js-dist-min").then(({ default: Plotly }) => {
-      if (disposed) return;
-      void Plotly.newPlot(element, figure.data, figure.layout || {}, {
-        responsive: true,
-        displaylogo: false,
-      });
-    });
-    return () => {
-      disposed = true;
-      void import("plotly.js-dist-min").then(({ default: Plotly }) => Plotly.purge(element));
-    };
-  }, [figure]);
-
-  return <div ref={plotRef} className="interactive-plot" aria-label="交互式 Plotly 图表" />;
-}
-
-interface SettingsDialogProps {
-  config: LLMConfig;
-  onClose: () => void;
-  onSaved: (config: LLMConfig) => void;
-  language: Language;
-}
-
-function SettingsDialog({ config, onClose, onSaved, language }: SettingsDialogProps) {
-  const ui = UI_TEXT[language];
-  const [baseUrl, setBaseUrl] = useState(config.base_url);
-  const [model, setModel] = useState(config.model);
-  const [modelChoice, setModelChoice] = useState(MODEL_OPTIONS.includes(config.model) ? config.model : "custom");
-  const [apiKey, setApiKey] = useState("");
-  const [mock, setMock] = useState(config.mock);
-  const [repairAttempts, setRepairAttempts] = useState(String(config.auto_repair_attempts));
-  const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(config.sandbox_mode);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const [connection, setConnection] = useState<ConnectionResult | null>(null);
-
-  const save = async () => {
-    setBusy(true);
-    setMessage("");
-    try {
-      const next = await updateLLMConfig({
-        ...(apiKey ? { api_key: apiKey } : {}),
-        base_url: baseUrl,
-        model,
-        mock,
-        auto_repair_attempts: Number(repairAttempts),
-        sandbox_mode: sandboxMode,
-      });
-      setApiKey("");
-      onSaved(next);
-      setMessage(language === "zh" ? "配置已保存" : "Configuration saved");
-    } catch (error) {
-      setMessage(String(error));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const test = async () => {
-    setBusy(true);
-    setMessage("");
-    try {
-      const result = await testLLMConnection();
-      setConnection(result);
-      setMessage(language === "zh" ? `连接成功，延迟 ${result.latency_ms} ms` : `Connected in ${result.latency_ms} ms`);
-    } catch (error) {
-      setConnection(null);
-      setMessage(String(error));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-        <div className="settings-heading">
-          <div>
-            <h2 id="settings-title">{ui.settings}</h2>
-            <p>{language === "zh" ? "配置保存在本机用户目录，不会通过配置接口返回完整密钥。" : "Saved in the local user directory. The full API key is never returned."}</p>
-          </div>
-          <button className="icon-btn" onClick={onClose} aria-label="关闭设置">×</button>
-        </div>
-        <label className="settings-field">
-          <span>OpenAI-compatible Base URL</span>
-          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.deepseek.com/v1" />
-        </label>
-        <label className="settings-field">
-          <span>{language === "zh" ? "模型名称" : "Model"}</span>
-          <select
-            value={modelChoice}
-            onChange={(e) => {
-              const value = e.target.value;
-              setModelChoice(value);
-              if (value !== "custom") setModel(value);
-            }}
-          >
-            {MODEL_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-            <option value="custom">{language === "zh" ? "自定义模型…" : "Custom model…"}</option>
-          </select>
-          {modelChoice === "custom" && (
-            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="输入模型名称" />
-          )}
-        </label>
-        <label className="settings-field">
-          <span>API Key {config.has_api_key && <small>{language === "zh" ? "当前" : "Current"}: {config.api_key_masked}</small>}</span>
-          <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={language === "zh" ? "留空表示保持当前密钥" : "Leave blank to keep current key"} autoComplete="new-password" />
-        </label>
-        <div className="settings-row">
-          <label className="settings-check">
-            <input type="checkbox" checked={mock} onChange={(e) => setMock(e.target.checked)} />
-            <span>{ui.mockMode}</span>
-          </label>
-          <label className="settings-field compact">
-            <span>{language === "zh" ? "自动修复次数（0–3）" : "Auto-repair attempts (0–3)"}</span>
-            <input type="number" min="0" max="3" value={repairAttempts} onChange={(e) => setRepairAttempts(e.target.value)} />
-          </label>
-        </div>
-        <label className="settings-field">
-          <span>{language === "zh" ? "代码执行隔离" : "Code execution isolation"}</span>
-          <select value={sandboxMode} onChange={(e) => setSandboxMode(e.target.value as "process" | "docker")}>
-            <option value="process">{language === "zh" ? "本地受限进程（无需 Docker）" : "Local worker (no Docker)"}</option>
-            <option value="docker">{language === "zh" ? "Docker 强隔离（需先构建镜像）" : "Docker isolation (build image first)"}</option>
-          </select>
-        </label>
-        {message && <p className={`settings-message${connection ? " success" : ""}`}>{message}</p>}
-        <div className="settings-actions">
-          <button className="btn secondary" onClick={test} disabled={busy}>{language === "zh" ? "测试当前连接" : "Test connection"}</button>
-          <button className="btn" onClick={save} disabled={busy}>{busy ? (language === "zh" ? "处理中…" : "Working…") : (language === "zh" ? "保存配置" : "Save" )}</button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-const OPERATION_LABELS: Record<string, string> = {
-  generate: "生成",
-  edit: "对话调整",
-  parameter: "参数调整",
-  run: "代码运行",
-  restore: "恢复版本",
+  sandbox_mode: "docker",
+  send_data_values: false,
 };
 
 export default function App() {
@@ -269,7 +65,6 @@ export default function App() {
     const stored = window.localStorage.getItem("quick-sciplot-language");
     return stored === "en" ? "en" : "zh";
   });
-  const ui = UI_TEXT[language];
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
@@ -278,14 +73,29 @@ export default function App() {
   const [history, setHistory] = useState<RevisionSummary[]>([]);
   const [llmConfig, setLlmConfig] = useState<LLMConfig>(DEFAULT_LLM_CONFIG);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [mimicOpen, setMimicOpen] = useState(false);
+  const [complianceOpen, setComplianceOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [result, setResult] = useState<PlotResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState("");
   const [editorCode, setEditorCode] = useState("");
   const [activeCard, setActiveCard] = useState<StatementCard | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const selectedPresetInfo = presets.find((preset) => preset.id === selectedPreset);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  const addToast = (type: "info" | "success" | "warning" | "error", message: string, title?: string) => {
+    const id = Date.now().toString() + Math.random().toString(36).substring(2, 7);
+    setToasts((prev) => [...prev, { id, type, message, title }]);
+  };
+
+  // Must be stable: each toast's auto-dismiss timer depends on this callback, so a
+  // new function on every render (e.g. every keystroke in the chat box) restarted
+  // the timers and toasts never expired while the user was typing.
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   const toggleLanguage = () => {
     const next = language === "zh" ? "en" : "zh";
@@ -299,10 +109,19 @@ export default function App() {
     let timer: number | undefined;
     const loadBackendMetadata = async () => {
       try {
-        const [nextPresets, nextConfig] = await Promise.all([listPresets(), getConfig()]);
+        const nextConfig = await getConfig();
+        const [nextPresets, savedDatasets] = await Promise.all([
+          listPresets(),
+          listDatasets(),
+        ]);
         if (disposed) return;
         if (nextPresets.length > 0) setPresets(nextPresets);
         setLlmConfig(nextConfig);
+        if (savedDatasets && savedDatasets.length > 0) {
+          setDatasets(savedDatasets);
+          setDataset(savedDatasets[0]);
+          setSelectedDatasetIds([savedDatasets[0].id]);
+        }
       } catch {
         if (!disposed && attempts++ < 20) {
           timer = window.setTimeout(loadBackendMetadata, 1000);
@@ -315,6 +134,25 @@ export default function App() {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, []);
+
+  const handleDeleteDataset = async (id: string) => {
+    try {
+      await deleteDataset(id);
+      const next = datasets.filter((d) => d.id !== id);
+      setDatasets(next);
+      setSelectedDatasetIds((prev) => prev.filter((x) => x !== id));
+      if (dataset?.id === id) {
+        const nextActive = next.length > 0 ? next[0] : null;
+        setDataset(nextActive);
+        setResult(null);
+        setEditorCode("");
+        setActiveCard(null);
+      }
+      addToast("info", language === "zh" ? "数据集已成功移除" : "Dataset removed");
+    } catch (e) {
+      addToast("error", String(e), language === "zh" ? "删除失败" : "Delete failed");
+    }
+  };
 
   useEffect(() => {
     const datasetId = dataset?.id;
@@ -329,7 +167,7 @@ export default function App() {
     try {
       setHistory(await listHistory(datasetId));
     } catch {
-      // 历史记录不是绘图主流程的阻塞条件。
+      // 历史记录失败不阻塞绘图
     }
   };
 
@@ -343,8 +181,23 @@ export default function App() {
       setSelectedDatasetIds(loaded.map((item) => item.id));
       setDataset(ds);
       setResult(null);
-      setMessages([{ role: "assistant", content: `${ui.imported} ${loaded.length} ${ui.files}，${ui.current} “${ds.name || ui.unnamed}”：${ds.summary.shape.rows} ${ui.rows} × ${ds.summary.shape.cols} ${ui.columns}。` }]);
+      addToast(
+        "success",
+        language === "zh"
+          ? `已成功载入 ${loaded.length} 个数据文件`
+          : `Successfully loaded ${loaded.length} files`
+      );
+      setMessages([
+        {
+          role: "assistant",
+          content:
+            language === "zh"
+              ? `已导入 ${loaded.length} 个数据文件，当前使用 “${ds.name || "未命名"}”：${ds.summary.shape.rows} 行 × ${ds.summary.shape.cols} 列。`
+              : `Imported ${loaded.length} files. Active: "${ds.name || "Unnamed"}" (${ds.summary.shape.rows} rows × ${ds.summary.shape.cols} cols).`,
+        },
+      ]);
     } catch (e) {
+      addToast("error", String(e), language === "zh" ? "导入失败" : "Import Failed");
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
     } finally {
       setBusy(false);
@@ -362,8 +215,22 @@ export default function App() {
       setResult(null);
       setEditorCode("");
       setActiveCard(null);
-      setMessages((m) => [...m, { role: "assistant", content: language === "zh" ? `已将 ${selectedDatasetIds.length} 个文件按行拼接，新增来源列 source_file。` : `Combined ${selectedDatasetIds.length} files by rows with a source_file column.` }]);
+      addToast(
+        "success",
+        language === "zh" ? "多表已成功合并" : "Datasets combined successfully"
+      );
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content:
+            language === "zh"
+              ? `已将 ${selectedDatasetIds.length} 个文件按行拼接，新增来源列 source_file。`
+              : `Combined ${selectedDatasetIds.length} files by rows with source_file column.`,
+        },
+      ]);
     } catch (error) {
+      addToast("error", String(error));
       setMessages((m) => [...m, { role: "assistant", content: String(error), error: true }]);
     } finally {
       setBusy(false);
@@ -374,28 +241,54 @@ export default function App() {
     const text = input.trim();
     if (!text || !dataset || busy) return;
     setInput("");
-    setMessages((m) => [...m, { role: "user", content: text }]);
+    const nextMessages: ChatMessage[] = [...messages, { role: "user", content: text }];
+    setMessages(nextMessages);
     setBusy(true);
     try {
       const res = result
-        ? await editPlot(dataset.id, result.code, text, selectedPreset)
+        ? await editPlot(dataset.id, result.code, text, selectedPreset, nextMessages)
         : await generatePlot(dataset.id, text, selectedPreset);
       setResult(res);
       setSelectedPreset(res.preset || selectedPreset);
       setEditorCode(res.code);
       void refreshHistory(dataset.id);
+      if (res.run.success) {
+        addToast(
+          "success",
+          language === "zh" ? "图表渲染完成 ✓" : "Plot rendered successfully ✓"
+        );
+      } else {
+        addToast(
+          "error",
+          language === "zh" ? "代码执行错误，请查看控制台输出" : "Execution failed, check stderr"
+        );
+      }
       setMessages((m) => [
         ...m,
         res.run.success
-          ? { role: "assistant", content: res.repair_attempts ? `图已生成，自动修复 ${res.repair_attempts} 次 ✓` : "图已生成 ✓" }
-          : { role: "assistant", content: "生成失败：" + (res.run.stderr || "无错误信息"), error: true },
+          ? {
+              role: "assistant",
+              content: res.repair_attempts
+                ? language === "zh"
+                  ? `图已生成，自动修复 ${res.repair_attempts} 次 ✓`
+                  : `Plot generated with ${res.repair_attempts} auto-repair(s) ✓`
+                : language === "zh"
+                ? "图已生成 ✓"
+                : "Plot generated ✓",
+            }
+          : {
+              role: "assistant",
+              content: (language === "zh" ? "生成失败：" : "Failed: ") + (res.run.stderr || "未知错误"),
+              error: true,
+            },
       ]);
     } catch (e) {
+      addToast("error", String(e));
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
     } finally {
       setBusy(false);
     }
-  }, [input, dataset, busy, result, selectedPreset]);
+  }, [input, dataset, busy, result, selectedPreset, messages, language]);
 
   const runEditor = async () => {
     if (!dataset) return;
@@ -406,13 +299,19 @@ export default function App() {
       setSelectedPreset(res.preset || selectedPreset);
       setEditorCode(res.code);
       void refreshHistory(dataset.id);
+      if (res.run.success) {
+        addToast("success", language === "zh" ? "代码已重跑渲染 ✓" : "Code re-rendered ✓");
+      } else {
+        addToast("error", language === "zh" ? "运行报错" : "Execution error");
+      }
       setMessages((m) => [
         ...m,
         res.run.success
-          ? { role: "assistant", content: "编辑后的代码已重新渲染 ✓" }
-          : { role: "assistant", content: "运行失败：" + (res.run.stderr || "无错误信息"), error: true },
+          ? { role: "assistant", content: language === "zh" ? "代码已重新执行渲染 ✓" : "Code re-rendered successfully ✓" }
+          : { role: "assistant", content: (language === "zh" ? "运行失败：" : "Run error: ") + (res.run.stderr || "未知错误"), error: true },
       ]);
     } catch (e) {
+      addToast("error", String(e));
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
     } finally {
       setBusy(false);
@@ -429,10 +328,20 @@ export default function App() {
       setEditorCode(res.code);
       void refreshHistory(dataset.id);
       setActiveCard(
-        res.statements.find((statement) => statement.start <= parameter.start_line && statement.end >= parameter.start_line) ?? null,
+        res.statements.find(
+          (statement) => statement.start <= parameter.start_line && statement.end >= parameter.start_line,
+        ) ?? null,
       );
-      setMessages((m) => [...m, { role: "assistant", content: `已应用“${parameter.label}”并重新渲染 ✓` }]);
+      addToast("info", language === "zh" ? `已应用“${parameter.label}”` : `Applied "${parameter.name}"`);
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: language === "zh" ? `已应用“${parameter.label}”并重新渲染 ✓` : `Applied "${parameter.name}" and re-rendered ✓`,
+        },
+      ]);
     } catch (e) {
+      addToast("error", String(e));
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
     } finally {
       setBusy(false);
@@ -449,9 +358,75 @@ export default function App() {
       setEditorCode(res.code);
       setActiveCard(null);
       await refreshHistory(dataset.id);
-      setMessages((m) => [...m, { role: "assistant", content: ui.restoreSuccess }]);
+      addToast("info", language === "zh" ? "已恢复历史版本" : "Version restored");
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: language === "zh" ? "已恢复历史版本并生成新版本 ✓" : "Version restored as new revision ✓" },
+      ]);
     } catch (e) {
+      addToast("error", String(e));
       setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRunCritic = async () => {
+    if (!result?.revision_id || busy) return;
+    setBusy(true);
+    try {
+      const report = await critiquePlot(result.revision_id);
+      const advice = report.suggestions.map((s) => `• ${s}`).join("\n");
+      const summaryMsg =
+        language === "zh"
+          ? `【🔍 视觉排版体检报告】\n综合排版评分：${report.score}/100\n${advice}`
+          : `【🔍 Visual Critique Report】\nLayout Score: ${report.score}/100\n${advice}`;
+      addToast("info", language === "zh" ? `体检得分：${report.score}/100` : `Critique score: ${report.score}/100`);
+      setMessages((m) => [...m, { role: "assistant", content: summaryMsg }]);
+      if (report.repair_prompt) {
+        setInput(report.repair_prompt);
+      }
+    } catch (e) {
+      addToast("error", String(e));
+      setMessages((m) => [...m, { role: "assistant", content: String(e), error: true }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleInteractiveAdjust = async (action: string, params: Record<string, unknown>) => {
+    if (!dataset || !result || busy) return;
+    setBusy(true);
+    try {
+      const res = await interactiveAdjustPlot({
+        dataset_id: dataset.id,
+        code: result.code,
+        action,
+        params,
+        preset: selectedPreset,
+      });
+      setResult(res);
+      setSelectedPreset(res.preset || selectedPreset);
+      setEditorCode(res.code);
+      void refreshHistory(dataset.id);
+      addToast(
+        "success",
+        language === "zh"
+          ? "🎯 交互修正已应用，绘图代码已同步更新！"
+          : "🎯 Adjustment applied & code updated!"
+      );
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content:
+            language === "zh"
+              ? `🎯 已完成画布可视化调整（${action}），代码已同步更新。`
+              : `🎯 Visual adjustment applied (${action}), code synchronized.`,
+        },
+      ]);
+    } catch (e) {
+      addToast("error", String(e), language === "zh" ? "修正失败" : "Adjustment failed");
     } finally {
       setBusy(false);
     }
@@ -459,299 +434,208 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="header">
-        <h1>Quick SciPlot</h1>
-        <span className="sub">{ui.subtitle}</span>
-        <span className={`llm-status${llmConfig.mock || llmConfig.has_api_key ? " ready" : ""}`}>
-          {llmConfig.mock ? ui.mockMode : llmConfig.has_api_key ? `${ui.modelConfigured} · ${llmConfig.model}` : ui.noApi}
-        </span>
-        <button className="btn secondary" onClick={toggleLanguage} disabled={busy}>
-          {ui.language}
-        </button>
-        <button className="btn secondary" onClick={() => setSettingsOpen(true)} disabled={busy}>
-          {ui.settings}
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          multiple
-          accept=".csv,.tsv,.txt,.xlsx,.xls,.json"
-          hidden
-          onChange={(e) => {
-            void handleUpload(Array.from(e.target.files || []));
-            e.currentTarget.value = "";
-          }}
-        />
-        <button className="btn" onClick={() => fileRef.current?.click()} disabled={busy}>
-          {ui.importData}
-        </button>
-      </header>
+      <Header
+        language={language}
+        llmConfig={llmConfig}
+        busy={busy}
+        hasDataset={!!dataset}
+        onToggleLanguage={toggleLanguage}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onUploadFiles={(files) => void handleUpload(files)}
+        onOpenMimic={() => setMimicOpen(true)}
+        onOpenComposer={() => setComposerOpen(true)}
+      />
 
       <main className="layout">
-        <section className="panel left">
-          <h2>{ui.data}</h2>
-          {datasets.length > 0 && (
-            <div className="dataset-files">
-              <div className="dataset-files-heading">{ui.importedFiles}</div>
-              {datasets.map((item) => (
-                <div
-                  key={item.id}
-                  className={`dataset-file${item.id === dataset?.id ? " active" : ""}`}
-                  onClick={() => {
-                    setDataset(item);
-                    setResult(null);
-                    setEditorCode("");
-                    setActiveCard(null);
-                  }}
-                  title={item.name || item.id}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedDatasetIds.includes(item.id)}
-                    onClick={(event) => event.stopPropagation()}
-                    onChange={(event) => {
-                      setSelectedDatasetIds((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id));
-                    }}
-                    disabled={busy}
-                  />
-                  <span>{item.name || ui.unnamed}</span>
-                  <small>{item.summary.shape.rows} × {item.summary.shape.cols}</small>
-                </div>
-              ))}
-              <button className="combine-button" onClick={() => void combineSelected()} disabled={busy || selectedDatasetIds.length < 2}>
-                {language === "zh" ? `合并选中文件（${selectedDatasetIds.length}）` : `Combine selected (${selectedDatasetIds.length})`}
-              </button>
-            </div>
-          )}
-          <div className="preset-picker">
-            <label htmlFor="preset-select">{ui.style}</label>
-            <select
-              id="preset-select"
-              value={selectedPreset}
-              onChange={(e) => setSelectedPreset(e.target.value)}
-              disabled={busy}
-            >
-              {presets.length === 0 ? (
-                <option value="default">默认</option>
-              ) : (
-                presets.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.name}
-                  </option>
-                ))
-              )}
-            </select>
-            {selectedPresetInfo && (
-              <>
-                <p className="preset-description">{selectedPresetInfo.description}</p>
-                <p className="preset-source">
-                  {selectedPresetInfo.local_available ? "● 本地预设已启用" : "○ 使用内置兜底"}
-                  {selectedPresetInfo.source && ` · ${selectedPresetInfo.source}`}
-                </p>
-              </>
-            )}
-          </div>
-          {!dataset ? (
-            <p className="hint">{ui.importHint}</p>
-          ) : (
-            <>
-              <p className="meta">
-                {dataset.summary.shape.rows} {ui.rows} × {dataset.summary.shape.cols} {ui.columns}
-              </p>
-              <table className="summary">
-                <thead>
-                  <tr>
-                    <th>{ui.column}</th>
-                    <th>{ui.type}</th>
-                    <th>{ui.missing}</th>
-                    <th>{ui.stats}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dataset.summary.columns.map((c) => (
-                    <tr key={c.name}>
-                      <td className="mono">{c.name}</td>
-                      <td>{c.dtype}</td>
-                      <td>{c.nulls}</td>
-                      <td className="mono small">
-                        {c.mean !== undefined ? `均值 ${c.mean}` : c.top_values?.[0] ? `最多 ${c.top_values[0].value}(${c.top_values[0].count})` : "-"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </>
-           )}
-          {dataset && (
-            <div className="history-section">
-              <div className="history-heading">
-                <span>{ui.history}</span>
-                <span className="history-count">{history.length}</span>
-              </div>
-              {history.length === 0 ? (
-                <p className="hint">{ui.firstVersion}</p>
-              ) : (
-                <div className="history-list">
-                  {history.slice(0, 12).map((revision) => (
-                    <button
-                      key={revision.id}
-                      className={`history-item${revision.id === result?.revision_id ? " active" : ""}`}
-                      disabled={busy || !revision.success}
-                      onClick={() => void restore(revision)}
-                      title={revision.success ? "恢复该版本" : "失败版本不可恢复"}
-                    >
-                      <span>{OPERATION_LABELS[revision.operation] || revision.operation}</span>
-                      <span>{revision.preset}</span>
-                      <small>{revision.created_at}</small>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-         </section>
+        <DataPanel
+          language={language}
+          dataset={dataset}
+          datasets={datasets}
+          selectedDatasetIds={selectedDatasetIds}
+          presets={presets}
+          selectedPreset={selectedPreset}
+          history={history}
+          activeRevisionId={result?.revision_id}
+          busy={busy}
+          onSelectDataset={(item) => {
+            setDataset(item);
+            setResult(null);
+            setEditorCode("");
+            setActiveCard(null);
+            setMessages([
+              {
+                role: "assistant",
+                content:
+                  language === "zh"
+                    ? `已切换至 “${item.name || "未命名"}”：${item.summary.shape.rows} 行 × ${item.summary.shape.cols} 列。`
+                    : `Switched to "${item.name || "Unnamed"}": ${item.summary.shape.rows} rows × ${item.summary.shape.cols} cols.`,
+              },
+            ]);
+          }}
+          onToggleDatasetSelect={(id, checked) => {
+            setSelectedDatasetIds((current) => (checked ? [...current, id] : current.filter((x) => x !== id)));
+          }}
+          onCombineSelected={() => void combineSelected()}
+          onSelectPreset={setSelectedPreset}
+          onRestoreRevision={(rev) => void restore(rev)}
+          onDeleteDataset={(id) => void handleDeleteDataset(id)}
+        />
 
-        <section className="panel center">
-          <h2>{ui.preview}</h2>
-          {result?.run.success && result.run.interactive ? (
-            <InteractivePlot figure={result.run.interactive} />
-          ) : result?.run.success && result.run.image ? (
-            <img className="plot-img" src={result.run.image} alt="生成的图表" />
-          ) : (
-            <p className="hint">{ui.previewHint}</p>
-          )}
-          {result && !result.run.success && <pre className="error">{result.run.stderr}</pre>}
-          {result?.run.success && result.revision_id && (
-            <div className="export-actions">
-              <span>{ui.export}</span>
-              {(["png", "svg", "pdf", "plotly"] as const)
-                .filter((format) => result.export_formats.includes(format))
-                .map((format) => (
-                  <a
-                    key={format}
-                    className="export-link"
-                    href={`/api/plots/revisions/${result.revision_id}/export/${format}`}
-                    download
-                  >
-                    {format === "plotly" ? "JSON" : format.toUpperCase()}
-                  </a>
-                ))}
-            </div>
-          )}
-        </section>
+        <PreviewCanvas
+          language={language}
+          result={result}
+          busy={busy}
+          onRunCritic={handleRunCritic}
+          onOpenStatsModal={() => setStatsOpen(true)}
+          onOpenComplianceModal={() => setComplianceOpen(true)}
+          onInteractiveAdjust={handleInteractiveAdjust}
+        />
 
-        <section className="panel right">
-          <h2>{ui.chat}</h2>
-          <div className="chat">
-            {messages.map((m, i) => (
-              <div key={i} className={`msg ${m.role}${m.error ? " error" : ""}`}>
-                {m.content}
-              </div>
-            ))}
-          </div>
-          <div className="chat-input">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              placeholder={ui.placeholder}
-              rows={2}
-            />
-            <button className="btn" onClick={send} disabled={busy || !dataset}>
-              {busy ? ui.generating : ui.send}
-            </button>
-          </div>
-        </section>
+        <ChatPanel
+          language={language}
+          dataset={dataset}
+          messages={messages}
+          input={input}
+          busy={busy}
+          disabled={!dataset}
+          onChangeInput={setInput}
+          onSend={send}
+        />
       </main>
 
       {result && (
-        <section className="code-panel">
-          <div className="code-panel-heading">
-            <h2>{ui.codeLocator}</h2>
-            <span>{ui.codeHint}</span>
-          </div>
-          <div className="code-workbench">
-            <div className="line-viewer" aria-label="带行号的完整代码">
-              {result.code.split("\n").map((line, index) => {
-                const lineNumber = index + 1;
-                const statement = result.statements.find((item) => lineNumber >= item.start && lineNumber <= item.end);
-                const active = Boolean(activeCard && lineNumber >= activeCard.start && lineNumber <= activeCard.end);
-                return (
-                  <div
-                    key={lineNumber}
-                    className={`code-line${active ? " active" : ""}`}
-                    onClick={() => statement && setActiveCard(statement)}
-                  >
-                    <span className="code-line-number">{lineNumber}</span>
-                    <code>{line || " "}</code>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="cards">
-              {result.statements.map((s, i) => (
-                <div
-                  key={`${s.start}-${s.end}-${i}`}
-                  className={`card ${activeCard?.start === s.start ? "active" : ""}`}
-                  onClick={() => {
-                    setActiveCard(s);
-                    setEditorCode(result.code);
-                  }}
-                >
-                  <div className="card-head">
-                    <span className="lines">L{s.start}–{s.end}</span>
-                    <span className="label">{s.label || "代码片段"}</span>
-                  </div>
-                  {(s.explanation_zh || s.explanation_en) && (
-                    <div className="statement-explanation">
-                      <strong>{s.explanation_zh}</strong>
-                      <small>{s.explanation_en}</small>
-                    </div>
-                  )}
-                  {s.data_bindings.length > 0 && (
-                    <div className="data-bindings">
-                      {s.data_bindings.map((binding) => (
-                        <span key={`${binding.axis}-${binding.column}`}>
-                          {binding.axis} → {binding.column} / {binding.meaning_zh} ({binding.meaning_en})
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <pre className="card-code">{s.code}</pre>
-                  {s.parameters.length > 0 && (
-                    <div className="parameter-list" onClick={(e) => e.stopPropagation()}>
-                      {s.parameters.map((parameter) => (
-                        <ParameterInput
-                          key={parameter.id}
-                          parameter={parameter}
-                          disabled={busy}
-                          onApply={applyParameterChange}
-                          language={language}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="editor">
-              <div className="editor-label">{ui.fullCode}</div>
-              <textarea value={editorCode} onChange={(e) => setEditorCode(e.target.value)} spellCheck={false} />
-              <button className="btn" onClick={runEditor} disabled={busy}>
-                {busy ? ui.running : ui.runCode}
-              </button>
-            </div>
-          </div>
-        </section>
+        <CodeWorkbench
+          language={language}
+          result={result}
+          editorCode={editorCode}
+          activeCard={activeCard}
+          busy={busy}
+          onChangeEditorCode={setEditorCode}
+          onSelectCard={(card) => {
+            setActiveCard(card);
+          }}
+          onApplyParameter={applyParameterChange}
+          onRunEditor={runEditor}
+          onCopyCode={(_code, ok) =>
+            ok
+              ? addToast("info", language === "zh" ? "代码已复制到剪贴板 ✓" : "Code copied to clipboard ✓")
+              : addToast("error", language === "zh" ? "复制失败，请在源码框中手动选择复制" : "Copy failed; select the code manually")
+          }
+        />
       )}
+
       {settingsOpen && (
-        <SettingsDialog config={llmConfig} onClose={() => setSettingsOpen(false)} onSaved={setLlmConfig} language={language} />
+        <SettingsDialog
+          config={llmConfig}
+          onClose={() => setSettingsOpen(false)}
+          onSaved={(newCfg) => {
+            setLlmConfig(newCfg);
+            addToast("success", language === "zh" ? "设置已成功保存" : "Settings saved");
+          }}
+          language={language}
+        />
       )}
+
+      {statsOpen && dataset && result && (
+        <StatsModal
+          language={language}
+          dataset={dataset}
+          code={result.code}
+          onClose={() => setStatsOpen(false)}
+          onSuccess={(res) => {
+            setResult(res);
+            setEditorCode(res.code);
+            void refreshHistory(dataset.id);
+            addToast(
+              "success",
+              language === "zh" ? "显著性标尺与星号标注已成功注入！" : "Stat brackets added!"
+            );
+            setMessages((m) => [
+              ...m,
+              {
+                role: "assistant",
+                content:
+                  language === "zh"
+                    ? "⚡ 统计显著性计算完成，已注入标准连线标尺与显著性星号！"
+                    : "⚡ Statistical significance computed and brackets injected!",
+              },
+            ]);
+          }}
+        />
+      )}
+
+      {composerOpen && dataset && (
+        <ComposerModal
+          language={language}
+          dataset={dataset}
+          currentCode={result?.code || ""}
+          history={history}
+          preset={selectedPreset}
+          onClose={() => setComposerOpen(false)}
+          onSuccess={(res) => {
+            setResult(res);
+            setEditorCode(res.code);
+            void refreshHistory(dataset.id);
+            addToast(
+              "success",
+              language === "zh" ? "组合大图编排完成！" : "Panels composed!"
+            );
+            setMessages((m) => [
+              ...m,
+              {
+                role: "assistant",
+                content:
+                  language === "zh"
+                    ? "📊 组合大图编排完成，已生成出版级多子图！"
+                    : "📊 Multi-panel figure composed successfully!",
+              },
+            ]);
+          }}
+        />
+      )}
+
+      {mimicOpen && dataset && (
+        <MimicModal
+          language={language}
+          dataset={dataset}
+          preset={selectedPreset}
+          onClose={() => setMimicOpen(false)}
+          onSuccess={(res) => {
+            setResult(res);
+            setEditorCode(res.code);
+            void refreshHistory(dataset.id);
+            addToast(
+              "success",
+              language === "zh" ? "论文图版式复刻完成！" : "Paper figure replicated!"
+            );
+            setMessages((m) => [
+              ...m,
+              {
+                role: "assistant",
+                content:
+                  language === "zh"
+                    ? "🎨 论文图视觉版式逆向复刻完成！"
+                    : "🎨 Paper figure style replicated successfully!",
+              },
+            ]);
+          }}
+        />
+      )}
+
+      {complianceOpen && result?.revision_id && (
+        <ComplianceModal
+          language={language}
+          revisionId={result.revision_id}
+          onClose={() => setComplianceOpen(false)}
+          onApplyPrompt={(prompt) => {
+            setInput(prompt);
+            addToast("info", language === "zh" ? "修复建议已填入对话框" : "Prompt applied to chat");
+          }}
+        />
+      )}
+
+      {/* Global Toast Container */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

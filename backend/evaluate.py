@@ -241,11 +241,30 @@ def main() -> int:
     parser.add_argument("--model-config", type=Path, help="模型矩阵 JSON（不包含密钥）")
     parser.add_argument("--base-url", help="--model 模式下覆盖 Base URL")
     parser.add_argument("--api-key-env", default="LLM_API_KEY", help="--model 模式下 API Key 环境变量名")
+    parser.add_argument(
+        "--sandbox-mode",
+        choices=("docker", "process"),
+        help="评测执行模式；默认沿用配置中的 SANDBOX_MODE",
+    )
+    parser.add_argument(
+        "--allow-unsafe-process-sandbox",
+        action="store_true",
+        help="明确允许可信本机评测使用 process 模式（不会改变生产默认）",
+    )
     parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("evaluation_cases.json"))
     parser.add_argument("--output", type=Path, help="保存机器可读 JSON 报告")
     parser.add_argument("--human-report", type=Path, help="生成带评分表的 HTML 人工评测报告")
     args = parser.parse_args()
     try:
+        if args.sandbox_mode is not None:
+            settings.sandbox_mode = args.sandbox_mode
+        if args.allow_unsafe_process_sandbox:
+            settings.allow_unsafe_process_sandbox = True
+        if settings.sandbox_mode == "process" and not settings.allow_unsafe_process_sandbox:
+            raise RuntimeError(
+                "process 评测需要显式传入 --allow-unsafe-process-sandbox，"
+                "因为它不是操作系统级安全边界"
+            )
         models = load_models(args)
         artifact_dir = args.human_report.with_name(args.human_report.stem + "_assets") if args.human_report else None
         if artifact_dir and artifact_dir.exists():

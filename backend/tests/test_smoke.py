@@ -3,6 +3,7 @@
 import io
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -12,8 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
+from app.config import SESSION_TOKEN as TEST_SESSION_TOKEN  # noqa: E402
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-Session-Token": TEST_SESSION_TOKEN})
 
 CSV = """year,revenue,users,group
 2020,100,1200,A
@@ -332,3 +334,302 @@ def test_unknown_preset_is_rejected():
     )
     assert resp.status_code == 400
     assert "未知预设" in resp.json()["detail"]
+
+
+def test_dataset_preserves_full_data_on_import(tmp_path):
+    from app import data_loader
+
+    # 生成一个超出常规模拟采样的行数（例如 100 行），验证行数被如实记录和存储
+    lines = ["index,val"] + [f"{i},{i*10}" for i in range(150)]
+    csv_bytes = "\n".join(lines).encode("utf-8")
+    ds = data_loader.import_dataset(tmp_path, "large.csv", csv_bytes)
+    assert ds["summary"]["shape"]["rows"] == 150
+    # 验证底层实际落盘文件未被随机采样破坏
+    import pandas as pd
+    saved_df = pd.read_csv(ds["path"])
+    assert len(saved_df) == 150
+    assert list(saved_df["index"][:5]) == [0, 1, 2, 3, 4]
+
+
+def test_edit_plot_passes_history():
+    ds_id = upload_dataset()["id"]
+    gen = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画柱状图"}).json()
+    resp = client.post(
+        "/api/plots/edit",
+        json={
+            "dataset_id": ds_id,
+            "code": gen["code"],
+            "instruction": "按第二轮意见修改",
+            "history": [
+                {"role": "user", "content": "第一轮画柱状图"},
+                {"role": "assistant", "content": "好的"},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["run"]["success"]
+
+
+def test_stats_annotator_calculations():
+    from app import stats_annotator
+    import pandas as pd
+
+    data = {
+        "treatment": ["A", "A", "A", "A", "B", "B", "B", "B"],
+        "measurement": [10.2, 10.5, 11.0, 9.8, 25.0, 26.2, 24.8, 27.1],
+    }
+    df = pd.DataFrame(data)
+    res = stats_annotator.compare_groups(df, "treatment", "measurement", "A", "B")
+    assert res["p_value"] < 0.001
+    assert res["stars"] == "***"
+    assert res["mean_a"] < res["mean_b"]
+
+
+def test_stats_annotation_endpoint():
+    # 上传带两组对比的测试数据
+    csv_content = "group,val\nctrl,10\nctrl,12\nctrl,11\ntreat,25\ntreat,28\ntreat,26\n"
+    resp = client.post("/api/datasets", files={"file": ("stats_demo.csv", io.BytesIO(csv_content.encode()), "text/csv")})
+    assert resp.status_code == 200
+    ds_id = resp.json()["id"]
+
+    base_code = """import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+means = df.groupby('group')['val'].mean()
+ax.bar(range(len(means)), means.values)
+ax.set_xticks(range(len(means)))
+ax.set_xticklabels(means.index)
+"""
+    stat_resp = client.post(
+        "/api/plots/stats",
+        json={
+            "dataset_id": ds_id,
+            "code": base_code,
+            "group_col": "group",
+            "val_col": "val",
+            "pairs": [["ctrl", "treat"]],
+        },
+    )
+    assert stat_resp.status_code == 200, stat_resp.text
+    data = stat_resp.json()
+    assert data["run"]["success"], data["run"].get("stderr")
+    assert "stats_results" in data
+    assert len(data["stats_results"]) == 1
+    assert data["stats_results"][0]["stars"] in ("*", "**", "***")
+    assert "学术统计显著性标尺" in data["code"]
+
+
+def test_compose_multipanel_figure():
+    ds_id = upload_dataset()["id"]
+    panel_1 = {"title": "Panel A: Revenue", "code": "ax.plot(df['year'], df['revenue'], marker='o')"}
+    panel_2 = {"title": "Panel B: Users", "code": "ax.bar(df['year'], df['users'], color='orange')"}
+    resp = client.post(
+        "/api/plots/compose",
+        json={
+            "dataset_id": ds_id,
+            "layout": "1x2",
+            "panels": [panel_1, panel_2],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["run"]["success"], data["run"].get("stderr")
+    assert "Subplot A" in data["code"]
+    assert "Subplot B" in data["code"]
+    assert "fig.tight_layout" in data["code"]
+
+
+def test_mimic_figure_generator():
+    ds_id = upload_dataset()["id"]
+    resp = client.post(
+        "/api/plots/mimic",
+        json={
+            "dataset_id": ds_id,
+            "reference_description": "想要 Nature 风格的双轴对比曲线图，带独立次级坐标轴",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["run"]["success"], data["run"].get("stderr")
+    assert "twinx" in data["code"] or "双Y轴" in data["code"]
+
+
+def test_stats_annotator_edge_cases():
+    from app import stats_annotator
+    import pandas as pd
+
+    # 1. 零方差常数数据测试
+    df_const = pd.DataFrame({
+        "group": ["Control", "Control", "Treatment", "Treatment"],
+        "value": [5.0, 5.0, 5.0, 5.0],
+    })
+    res = stats_annotator.compare_groups(df_const, "group", "value", "Control", "Treatment")
+    assert res["p_value"] == 1.0
+    assert res["stars"] == "ns"
+    assert res["statistic"] == 0.0
+
+    # 2. 全负数数据测试
+    df_neg = pd.DataFrame({
+        "group": ["A", "A", "B", "B"],
+        "value": [-20.0, -22.0, -10.0, -12.0],
+    })
+    code = "import matplotlib.pyplot as plt\nfig, ax = plt.subplots()\nax.bar([0, 1], [-21, -11])\n"
+    annotated_code, results = stats_annotator.inject_stat_brackets(
+        code, df_neg, "group", "value", [("A", "B")]
+    )
+    assert "_y_span = max(_y_max - _y_min, 1e-4)" in annotated_code
+    assert "_bracket_y = _y_max + _y_span * 0.05" in annotated_code
+    assert len(results) == 1
+    assert results[0]["group_a"] == "A"
+
+
+def test_figure_composer_scope_isolation():
+    from app import figure_composer
+
+    panels = [
+        {"title": "Panel 1", "code": "val = 100\nax.plot([1, 2], [val, val])"},
+        {"title": "Panel 2", "code": "val = 200\nax.plot([1, 2], [val, val])"},
+    ]
+    composed = figure_composer.compose_multipanel_figure(panels, layout="1x2")
+    assert "def _draw_panel_0(ax):" in composed
+    assert "def _draw_panel_1(ax):" in composed
+    assert "plt.sca(ax)" in composed
+    assert "_draw_panel_0(ax_0)" in composed
+    assert "_draw_panel_1(ax_1)" in composed
+
+
+def test_visual_critic_and_compliance():
+    ds_id = upload_dataset()["id"]
+    # 先生成一张标准图
+    gen = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "画散点图"}).json()
+    assert gen["revision_id"]
+
+    # 1. 运行视觉质检
+    critique_resp = client.post("/api/plots/critique", json={"revision_id": gen["revision_id"]})
+    assert critique_resp.status_code == 200, critique_resp.text
+    critique_data = critique_resp.json()
+    assert "score" in critique_data
+    assert "suggestions" in critique_data
+    assert isinstance(critique_data["suggestions"], list)
+
+    # 2. 运行顶刊合规检查 (Nature)
+    comp_resp = client.get(f"/api/plots/revisions/{gen['revision_id']}/compliance/nature")
+    assert comp_resp.status_code == 200, comp_resp.text
+    comp_data = comp_resp.json()
+    assert comp_data["journal"] == "Nature Portfolio"
+    assert "checks" in comp_data
+    assert any("矢量图" in check["item"] for check in comp_data["checks"])
+
+
+def test_auth_boundary_enforcement():
+    """测试未授权请求拦截与 Session Token 校验。"""
+    anon_client = TestClient(app)
+    # 1. 无 token 访问数据集列表 -> 401
+    resp = anon_client.get("/api/datasets")
+    assert resp.status_code == 401
+
+    # 2. 无 token 修改 LLM 配置 -> 401
+    resp = anon_client.put("/api/config/llm", json={"model": "deepseek-chat"})
+    assert resp.status_code == 401
+
+    # 3. 携带错误 token -> 401
+    resp = anon_client.get("/api/datasets", headers={"X-Session-Token": "invalid_fake_token"})
+    assert resp.status_code == 401
+
+    # 4. 携带正确 token -> 200
+    resp = anon_client.get("/api/datasets", headers={"X-Session-Token": TEST_SESSION_TOKEN})
+    assert resp.status_code == 200
+
+
+def test_ssrf_protection():
+    """测试 LLM Base URL 的 SSRF 攻击防御。"""
+    # 1. 禁止访问云元数据服务
+    resp = client.put("/api/config/llm", json={"base_url": "http://169.254.169.254/latest"})
+    assert resp.status_code == 400
+    assert "禁止" in resp.json()["detail"] or "元数据" in resp.json()["detail"]
+
+    # 2. 禁止私有内网 IP (10.x.x.x)
+    resp = client.put("/api/config/llm", json={"base_url": "http://10.0.0.1:8000/v1"})
+    assert resp.status_code == 400
+    assert "私有内网" in resp.json()["detail"] or "禁止" in resp.json()["detail"]
+
+    # 3. 禁止私有内网 IP (192.168.x.x)
+    resp = client.put("/api/config/llm", json={"base_url": "http://192.168.1.1:8000/v1"})
+    assert resp.status_code == 400
+
+
+def test_composer_validation():
+    """测试多子图编排器的面板容量与布局校验。"""
+    ds_id = upload_dataset()["id"]
+    p1 = {"title": "A", "code": "ax.plot([1, 2], [3, 4])"}
+    p2 = {"title": "B", "code": "ax.bar([1, 2], [3, 4])"}
+    p3 = {"title": "C", "code": "ax.scatter([1, 2], [3, 4])"}
+
+    # 1. 1x2 布局传入 3 个面板超限 -> 400
+    resp = client.post(
+        "/api/plots/compose",
+        json={"dataset_id": ds_id, "layout": "1x2", "panels": [p1, p2, p3]},
+    )
+    assert resp.status_code == 400
+    assert "最多支持 2 个面板" in resp.json()["detail"]
+
+    # 2. 未知布局 -> 400
+    resp = client.post(
+        "/api/plots/compose",
+        json={"dataset_id": ds_id, "layout": "unknown_3x3", "panels": [p1]},
+    )
+    assert resp.status_code == 400
+    assert "不支持的布局类型" in resp.json()["detail"]
+
+
+def test_compliance_validation_unknown_journal():
+    """测试合规检查对未知期刊的明确提示。"""
+    ds_id = upload_dataset()["id"]
+    gen = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "柱状图"}).json()
+    rev_id = gen["revision_id"]
+
+    resp = client.get(f"/api/plots/revisions/{rev_id}/compliance/unknown_journal_xyz")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert not data["passed"]
+    assert "未知期刊" in data["journal"]
+    assert "未收录" in data["checks"][0]["detail"]
+
+
+def test_sandbox_ast_blocks_dangerous_escapes():
+    """测试沙箱 AST 静态分析对原型链遍历与 __import__ 逃逸的封堵。"""
+    from app.sandbox import validate_script, SandboxError
+
+    # 1. 封堵 __import__
+    with pytest.raises(SandboxError, match="禁止"):
+        validate_script("__import__('os').system('dir')")
+
+    # 2. 封堵 __subclasses__ 原型链反射
+    with pytest.raises(SandboxError, match="禁止"):
+        validate_script("x = ().__class__.__bases__[0].__subclasses__()")
+
+    # 3. 封堵 __builtins__
+    with pytest.raises(SandboxError, match="禁止"):
+        validate_script("b = __builtins__")
+
+
+def test_database_cleans_up_revision_output_directories(tmp_path):
+    """测试删除数据集时级联清理磁盘上的 output 目录。"""
+    ds_id = upload_dataset()["id"]
+    gen = client.post("/api/plots/generate", json={"dataset_id": ds_id, "instruction": "折线图"}).json()
+    rev_id = gen["revision_id"]
+    from app.database import get_revision
+    rev = get_revision(rev_id)
+    out_dir = Path(rev["output_dir"])
+    assert out_dir.exists()
+
+    # 删除数据集
+    del_resp = client.delete(f"/api/datasets/{ds_id}")
+    assert del_resp.status_code == 200
+
+    # 验证数据库记录已删除且磁盘物理目录已清理
+    assert not out_dir.exists()
+
+
+
+
+

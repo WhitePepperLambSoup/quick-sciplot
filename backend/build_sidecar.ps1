@@ -11,6 +11,13 @@ if (-not (Test-Path -LiteralPath $python)) {
     throw "backend/.venv not found. Create it and install requirements-build.txt first."
 }
 
+foreach ($lockFile in @("requirements.lock.txt", "requirements-sandbox.lock.txt")) {
+    $lockPath = Join-Path $backendRoot $lockFile
+    if (-not (Test-Path -LiteralPath $lockPath)) {
+        throw "Missing dependency lock file: $lockPath"
+    }
+}
+
 & $python -m PyInstaller `
     --noconfirm `
     --clean `
@@ -40,3 +47,13 @@ if (-not (Test-Path -LiteralPath $targetDir)) {
 }
 Copy-Item -LiteralPath $output -Destination $targetBinary -Force
 Write-Output "Created $targetBinary"
+
+if ($env:GENERATE_SBOM -eq "1") {
+    $sbomScript = Join-Path $backendRoot "generate_sbom.py"
+    $sbomOutput = Join-Path $backendRoot "dist\quick-sciplot-backend.sbom.json"
+    & $python $sbomScript --output $sbomOutput
+    if ($LASTEXITCODE -ne 0) {
+        throw "SBOM generation failed"
+    }
+    Write-Output "Created $sbomOutput"
+}

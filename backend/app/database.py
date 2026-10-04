@@ -1,11 +1,29 @@
 """SQLite 持久化：数据集元信息与绘图版本历史。"""
 
 import json
+import math
+import shutil
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 
 from .config import settings
+
+# Output directories that exist on disk before their revision row does (a plot is
+# still rendering).  Orphan cleanup must not treat them as abandoned.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT_OUTPUTS: set[Path] = set()
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def _db_path() -> Path:
@@ -19,6 +37,23 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def safe_dataset_path(data_dir: Path, raw_path: str | Path) -> Path | None:
+    """Return a canonical dataset path only for a regular CSV below data_dir."""
+    try:
+        raw_candidate = Path(raw_path)
+        if raw_candidate.is_symlink():
+            return None
+        data_root = data_dir.resolve()
+        candidate = raw_candidate.resolve()
+        if candidate.parent != data_root or candidate.suffix.lower() != ".csv":
+            return None
+        if candidate.is_symlink() or not candidate.is_file():
+            return None
+        return candidate
+    except (OSError, TypeError, ValueError):
+        return None
+
+
 def init_db() -> None:
     settings.ensure_dirs()
     with _connect() as conn:
@@ -29,47 +64,41 @@ def init_db() -> None:
                 name TEXT NOT NULL DEFAULT '',
                 path TEXT NOT NULL,
                 summary_json TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS revisions (
                 id TEXT PRIMARY KEY,
-                dataset_id TEXT NOT NULL,
+                dataset_id TEXT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
                 code TEXT NOT NULL,
-                preset TEXT NOT NULL,
-                operation TEXT NOT NULL,
+                preset TEXT NOT NULL DEFAULT 'default',
+                operation TEXT NOT NULL DEFAULT 'generate',
                 output_dir TEXT NOT NULL,
-                success INTEGER NOT NULL,
+                success INTEGER NOT NULL DEFAULT 1,
                 stderr TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(dataset_id) REFERENCES datasets(id) ON DELETE CASCADE
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE INDEX IF NOT EXISTS idx_revisions_dataset_created
-            ON revisions(dataset_id, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_revisions_dataset ON revisions(dataset_id);
             """
         )
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(datasets)").fetchall()}
-        if "name" not in columns:
-            conn.execute("ALTER TABLE datasets ADD COLUMN name TEXT NOT NULL DEFAULT ''")
 
 
 def save_dataset(dataset: dict) -> None:
+    path = safe_dataset_path(settings.data_dir, dataset.get("path", ""))
+    if path is None:
+        raise ValueError("数据集路径必须是 data_dir 下的普通 CSV 文件")
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO datasets(id, name, path, summary_json)
+            INSERT OR REPLACE INTO datasets(id, name, path, summary_json)
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                name = excluded.name,
-                path = excluded.path,
-                summary_json = excluded.summary_json
             """,
             (
                 dataset["id"],
-                dataset.get("name", Path(dataset["path"]).stem),
-                dataset["path"],
-                json.dumps(dataset["summary"], ensure_ascii=False),
+                dataset.get("name", ""),
+                str(path),
+                json.dumps(dataset.get("summary", {}), ensure_ascii=False),
             ),
         )
 
@@ -79,7 +108,240 @@ def get_dataset(dataset_id: str) -> dict | None:
         row = conn.execute("SELECT id, name, path, summary_json FROM datasets WHERE id = ?", (dataset_id,)).fetchone()
     if row is None:
         return None
-    return {"id": row["id"], "name": row["name"] or Path(row["path"]).stem, "path": row["path"], "summary": json.loads(row["summary_json"])}
+    path = safe_dataset_path(settings.data_dir, row["path"])
+    if path is None:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "path": str(path),
+        "summary": _json_safe(json.loads(row["summary_json"])),
+    }
+
+
+def list_datasets(*, include_path: bool = False) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT id, name, path, summary_json FROM datasets ORDER BY created_at DESC").fetchall()
+    datasets = []
+    for row in rows:
+        path = safe_dataset_path(settings.data_dir, row["path"])
+        if path is None:
+            continue
+        try:
+            item = {
+                "id": row["id"],
+                "name": row["name"] or path.stem,
+                "summary": _json_safe(json.loads(row["summary_json"])),
+            }
+            if include_path:
+                item["path"] = str(path)
+            datasets.append(item)
+        except Exception:
+            continue
+    return datasets
+
+
+def delete_dataset(dataset_id: str) -> bool:
+    output_dirs: list[Path] = []
+    with _connect() as conn:
+        row = conn.execute("SELECT path FROM datasets WHERE id = ?", (dataset_id,)).fetchone()
+        if row is None:
+            return False
+        path = safe_dataset_path(settings.data_dir, row["path"])
+
+        # 查找该数据集关联的所有版本产物输出目录
+        rev_rows = conn.execute("SELECT output_dir FROM revisions WHERE dataset_id = ?", (dataset_id,)).fetchall()
+        for r in rev_rows:
+            if r["output_dir"]:
+                output_dir = _safe_output_dir(settings.data_dir, r["output_dir"])
+                if output_dir is not None:
+                    output_dirs.append(output_dir)
+
+        conn.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
+
+    # 清理源数据文件
+    if path is not None and path.exists():
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # 清理所有历史绘图产物目录，释放磁盘空间
+    for out_dir in output_dirs:
+        if out_dir.exists() and out_dir.is_dir():
+            try:
+                shutil.rmtree(out_dir, ignore_errors=True)
+            except Exception:
+                pass
+    return True
+
+
+def mark_output_inflight(output_dir: Path) -> None:
+    """Protect an output directory from orphan cleanup until its revision is saved.
+
+    Call this *before* the directory is created.
+    """
+    with _INFLIGHT_LOCK:
+        _INFLIGHT_OUTPUTS.add(Path(output_dir).resolve())
+
+
+def release_output_inflight(output_dir: Path) -> None:
+    with _INFLIGHT_LOCK:
+        _INFLIGHT_OUTPUTS.discard(Path(output_dir).resolve())
+
+
+def cleanup_orphaned_outputs(data_dir: Path | None = None) -> int:
+    """清理 outputs 目录下未被任何有效 revision 引用的孤立历史产物目录。"""
+    if data_dir is None:
+        data_dir = settings.data_dir
+    outputs_root = (data_dir / "outputs").resolve()
+    if not outputs_root.exists() or not outputs_root.is_dir():
+        return 0
+
+    # The lock is held for the whole sweep so a plot that starts concurrently
+    # either registers first (and is skipped) or creates its directory after the
+    # sweep has finished.  Otherwise a second request could delete the output
+    # directory of a render that is still running.
+    with _INFLIGHT_LOCK:
+        with _connect() as conn:
+            rows = conn.execute("SELECT output_dir FROM revisions").fetchall()
+            active_dirs = {
+                output_dir
+                for r in rows
+                if r["output_dir"]
+                for output_dir in [_safe_output_dir(data_dir, r["output_dir"])]
+                if output_dir is not None
+            }
+        protected = active_dirs | _INFLIGHT_OUTPUTS
+
+        cleaned_count = 0
+        for child in outputs_root.iterdir():
+            if child.is_dir() and child.resolve() not in protected:
+                try:
+                    shutil.rmtree(child, ignore_errors=True)
+                    cleaned_count += 1
+                except Exception:
+                    pass
+    return cleaned_count
+
+
+def _safe_output_dir(data_dir: Path, raw_path: str | Path) -> Path | None:
+    root = (data_dir / "outputs").resolve()
+    try:
+        raw_candidate = Path(raw_path)
+        if raw_candidate.is_symlink():
+            return None
+        candidate = raw_candidate.resolve()
+        candidate.relative_to(root)
+        if candidate == root or candidate.parent != root:
+            return None
+    except (OSError, ValueError, TypeError):
+        return None
+    return candidate
+
+
+def _directory_size(path: Path) -> int:
+    total = 0
+    if not path.is_dir():
+        return 0
+    try:
+        for child in path.rglob("*"):
+            if child.is_file():
+                try:
+                    total += child.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return total
+    return total
+
+
+def _delete_output_dir(data_dir: Path, raw_path: str | Path) -> int:
+    output_dir = _safe_output_dir(data_dir, raw_path)
+    if output_dir is None or not output_dir.is_dir():
+        return 0
+    size = _directory_size(output_dir)
+    shutil.rmtree(output_dir, ignore_errors=True)
+    return size
+
+
+def prune_revisions(*, max_revisions_per_dataset: int, max_output_bytes: int) -> dict[str, int]:
+    """Prune old revision rows and output directories within the data root."""
+    data_dir = settings.data_dir
+    cleanup_orphaned_outputs(data_dir)
+    keep_limit = max(1, int(max_revisions_per_dataset))
+    byte_limit = max(0, int(max_output_bytes))
+
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT rowid AS row_id, id, dataset_id, output_dir, created_at
+            FROM revisions
+            ORDER BY created_at DESC, rowid DESC
+            """
+        ).fetchall()
+
+        kept_by_dataset: dict[str, int] = {}
+        retained: list[sqlite3.Row] = []
+        candidates: list[sqlite3.Row] = []
+        for row in rows:
+            count = kept_by_dataset.get(row["dataset_id"], 0)
+            if count < keep_limit:
+                kept_by_dataset[row["dataset_id"]] = count + 1
+                retained.append(row)
+            else:
+                candidates.append(row)
+
+        def size_for(row: sqlite3.Row) -> int:
+            output_dir = _safe_output_dir(data_dir, row["output_dir"])
+            return _directory_size(output_dir) if output_dir else 0
+
+        remaining_bytes = sum(size_for(row) for row in retained)
+        selected = list(candidates)
+
+        # If the configured byte budget is smaller than the retained history,
+        # drop the oldest retained rows as a last resort while keeping at least
+        # one newest revision globally.
+        if remaining_bytes > byte_limit and retained:
+            removed_retained = 0
+            for row in sorted(retained, key=lambda item: (item["created_at"], item["row_id"])):
+                if remaining_bytes <= byte_limit or len(retained) - removed_retained <= 1:
+                    break
+                selected.append(row)
+                remaining_bytes -= size_for(row)
+                removed_retained += 1
+
+        if selected:
+            placeholders = ",".join("?" for _ in selected)
+            conn.execute(f"DELETE FROM revisions WHERE id IN ({placeholders})", [row["id"] for row in selected])
+
+    removed_bytes = 0
+    for row in selected:
+        removed_bytes += _delete_output_dir(data_dir, row["output_dir"])
+    cleanup_orphaned_outputs(data_dir)
+
+    remaining_dirs = []
+    outputs_root = data_dir / "outputs"
+    if outputs_root.is_dir():
+        remaining_dirs = [child for child in outputs_root.iterdir() if child.is_dir()]
+    actual_remaining_bytes = sum(_directory_size(path) for path in remaining_dirs)
+    return {
+        "removed_revisions": len(selected),
+        "removed_bytes": removed_bytes,
+        "remaining_bytes": actual_remaining_bytes,
+    }
+
+
+def delete_revision(revision_id: str) -> bool:
+    """Delete one revision and its data-root-scoped output directory."""
+    data_dir = settings.data_dir
+    with _connect() as conn:
+        row = conn.execute("SELECT output_dir FROM revisions WHERE id = ?", (revision_id,)).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM revisions WHERE id = ?", (revision_id,))
+    _delete_output_dir(data_dir, row["output_dir"])
+    return True
 
 
 def create_revision(
@@ -91,6 +353,9 @@ def create_revision(
     success: bool,
     stderr: str = "",
 ) -> str:
+    safe_output_dir = _safe_output_dir(settings.data_dir, output_dir)
+    if safe_output_dir is None or not safe_output_dir.is_dir():
+        raise ValueError("绘图产物目录必须是 outputs 下的直接子目录")
     revision_id = uuid.uuid4().hex
     with _connect() as conn:
         conn.execute(
@@ -98,7 +363,7 @@ def create_revision(
             INSERT INTO revisions(id, dataset_id, code, preset, operation, output_dir, success, stderr)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (revision_id, dataset_id, code, preset, operation, str(output_dir), int(success), stderr[-4000:]),
+            (revision_id, dataset_id, code, preset, operation, str(safe_output_dir), int(success), stderr[-4000:]),
         )
     return revision_id
 
@@ -150,3 +415,18 @@ def get_revision(revision_id: str) -> dict | None:
         "stderr": row["stderr"],
         "created_at": row["created_at"],
     }
+
+
+def public_revision(revision: dict) -> dict:
+    """Return revision metadata without exposing internal filesystem paths."""
+    public_keys = (
+        "id",
+        "dataset_id",
+        "code",
+        "preset",
+        "operation",
+        "success",
+        "stderr",
+        "created_at",
+    )
+    return {key: revision[key] for key in public_keys if key in revision}

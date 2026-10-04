@@ -7,6 +7,8 @@ skills/
 .env
 .env.local
 *.env
+.session_token
+backend/.session_token
 
 # --- Python ---
 __pycache__/
