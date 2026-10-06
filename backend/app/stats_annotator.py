@@ -33,12 +33,17 @@ def compute_cohens_d(data_a: np.ndarray, data_b: np.ndarray) -> float:
     return float(round(float(np.mean(data_a) - np.mean(data_b)) / pooled_sd, 3))
 
 
+TEST_TYPES = {"auto", "welch", "t-test", "mann-whitney", "paired-t", "wilcoxon", "tukey", "kruskal", "anova"}
+CORRECTION_METHODS = {"bonferroni", "fdr_bh", "none"}
+PAIRED_TESTS = {"paired-t", "wilcoxon"}
+
+
 def adjust_p_values(p_values: list[float], method: str = "fdr_bh") -> list[float]:
-    """计算多重比较校正 p 值 (Bonferroni 或 Benjamini-Hochberg FDR)。"""
-    if method not in {"bonferroni", "fdr_bh"}:
+    """计算多重比较校正 p 值 (Bonferroni、Benjamini-Hochberg FDR，或不校正)。"""
+    if method not in CORRECTION_METHODS:
         raise ValueError(f"不支持的 p 值校正方法: {method}")
     m = len(p_values)
-    if m <= 1:
+    if m <= 1 or method == "none":
         return list(p_values)
     if method == "bonferroni":
         return [min(float(p * m), 1.0) for p in p_values]
@@ -62,8 +67,12 @@ def compare_groups(
     group_a: Any,
     group_b: Any,
     test_type: str = "auto",
+    pair_col: str | None = None,
 ) -> dict:
     """计算两组数据的统计检验结果与效应量。"""
+    if test_type in PAIRED_TESTS:
+        return _compare_paired(df, group_col, val_col, group_a, group_b, test_type, pair_col)
+
     data_a = pd.to_numeric(df[df[group_col].astype(str) == str(group_a)][val_col], errors="coerce").dropna().values
     data_b = pd.to_numeric(df[df[group_col].astype(str) == str(group_b)][val_col], errors="coerce").dropna().values
 
@@ -112,6 +121,153 @@ def compare_groups(
         "mean_b": float(round(np.mean(data_b), 4)),
         "cohens_d": cohens_d,
     }
+
+
+def _compare_paired(
+    df: pd.DataFrame,
+    group_col: str,
+    val_col: str,
+    group_a: Any,
+    group_b: Any,
+    test_type: str,
+    pair_col: str | None,
+) -> dict:
+    """Paired comparison: rows of the two groups are matched by ``pair_col`` (e.g. subject id)."""
+    if not pair_col:
+        raise ValueError("配对检验需要指定配对 ID 列（例如受试者编号）")
+    subset = df[df[group_col].astype(str).isin([str(group_a), str(group_b)])][[pair_col, group_col, val_col]].copy()
+    subset[val_col] = pd.to_numeric(subset[val_col], errors="coerce")
+    subset[group_col] = subset[group_col].astype(str)
+    wide = subset.dropna().groupby([pair_col, group_col])[val_col].mean().unstack(group_col)
+    if str(group_a) not in wide.columns or str(group_b) not in wide.columns:
+        raise ValueError(f"组 {group_a} 或组 {group_b} 没有可配对的数据")
+    wide = wide[[str(group_a), str(group_b)]].dropna()
+    if len(wide) < 2:
+        raise ValueError("可配对的样本少于 2 对")
+    data_a = wide[str(group_a)].values
+    data_b = wide[str(group_b)].values
+    differences = data_a - data_b
+    if np.allclose(differences, 0):
+        stat, p_val = 0.0, 1.0
+    elif test_type == "wilcoxon":
+        stat, p_val = stats.wilcoxon(data_a, data_b)
+    else:
+        stat, p_val = stats.ttest_rel(data_a, data_b)
+    if np.isnan(p_val) or np.isnan(stat):
+        stat, p_val = 0.0, 1.0
+    sd = np.std(differences, ddof=1) if len(differences) > 1 else 0.0
+    effect = float(round(float(np.mean(differences)) / sd, 3)) if sd and not np.isnan(sd) else 0.0
+    return {
+        "group_a": str(group_a),
+        "group_b": str(group_b),
+        "test_name": "Wilcoxon signed-rank" if test_type == "wilcoxon" else "Paired t-test",
+        "statistic": float(round(float(stat), 4)),
+        "p_value": float(round(float(p_val), 6)),
+        "p_formatted": "p < 0.001" if p_val < 0.001 else f"p = {p_val:.4f}",
+        "stars": p_value_to_asterisks(p_val),
+        "mean_a": float(round(float(np.mean(data_a)), 4)),
+        "mean_b": float(round(float(np.mean(data_b)), 4)),
+        "cohens_d": effect,
+        "n_pairs": int(len(wide)),
+    }
+
+
+def tukey_pairwise(df: pd.DataFrame, group_col: str, val_col: str, pairs: list[tuple[Any, Any]]) -> list[dict]:
+    """Tukey HSD over all groups involved in ``pairs``; p-values are already family-wise adjusted."""
+    names = list(dict.fromkeys(str(name) for pair in pairs for name in pair))
+    samples = [pd.to_numeric(df[df[group_col].astype(str) == name][val_col], errors="coerce").dropna().values for name in names]
+    if any(len(sample) < 2 for sample in samples):
+        raise ValueError("Tukey HSD 要求每组至少 2 个数值")
+    result = stats.tukey_hsd(*samples)
+    index = {name: i for i, name in enumerate(names)}
+    rows = []
+    for group_a, group_b in pairs:
+        i, j = index[str(group_a)], index[str(group_b)]
+        p_val = float(result.pvalue[i][j])
+        stat = float(result.statistic[i][j])
+        rows.append(
+            {
+                "group_a": str(group_a),
+                "group_b": str(group_b),
+                "test_name": "Tukey HSD",
+                "statistic": float(round(stat, 4)),
+                "p_value": float(round(p_val, 6)),
+                "p_formatted": "p < 0.001" if p_val < 0.001 else f"p = {p_val:.4f}",
+                "stars": p_value_to_asterisks(p_val),
+                "mean_a": float(round(float(np.mean(samples[i])), 4)),
+                "mean_b": float(round(float(np.mean(samples[j])), 4)),
+                "cohens_d": compute_cohens_d(samples[i], samples[j]),
+            }
+        )
+    return rows
+
+
+def fit_regression(df: pd.DataFrame, x_col: str, y_col: str, degree: int = 1) -> dict:
+    """Least-squares polynomial fit of ``y_col`` on ``x_col``."""
+    if degree not in {1, 2, 3}:
+        raise ValueError("拟合阶数只能是 1、2 或 3")
+    data = df[[x_col, y_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(data) < degree + 2:
+        raise ValueError(f"{degree} 阶拟合至少需要 {degree + 2} 个有效数据点")
+    x = data[x_col].values.astype(float)
+    y = data[y_col].values.astype(float)
+    if np.ptp(x) == 0:
+        raise ValueError("x 列取值全部相同，无法拟合")
+    coefficients = np.polyfit(x, y, degree)
+    predicted = np.polyval(coefficients, x)
+    ss_res = float(np.sum((y - predicted) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    result = {
+        "x_col": x_col,
+        "y_col": y_col,
+        "degree": degree,
+        "n": int(len(data)),
+        "coefficients": [float(c) for c in coefficients],
+        "r_squared": round(float(r_squared), 6),
+        "x_range": [float(np.min(x)), float(np.max(x))],
+    }
+    if degree == 1:
+        slope_test = stats.linregress(x, y)
+        result["p_value"] = float(slope_test.pvalue)
+    result["equation"] = _equation_text(coefficients)
+    return result
+
+
+def _equation_text(coefficients) -> str:
+    degree = len(coefficients) - 1
+    terms = []
+    for power, value in zip(range(degree, -1, -1), coefficients):
+        magnitude = f"{abs(value):.4g}"
+        variable = "" if power == 0 else ("x" if power == 1 else f"x^{power}")
+        term = f"{magnitude}{variable}"
+        if not terms:
+            terms.append(("-" if value < 0 else "") + term)
+        else:
+            terms.append(("- " if value < 0 else "+ ") + term)
+    return "y = " + " ".join(terms)
+
+
+def inject_regression(original_code: str, fit: dict, color: str = "#d62728") -> str:
+    """Append code that draws the fitted curve and its equation/R² on the current axes."""
+    label = f"{fit['equation']}\nR² = {fit['r_squared']:.4f}"
+    if "p_value" in fit:
+        p_val = fit["p_value"]
+        label += "\np < 0.001" if p_val < 0.001 else f"\np = {p_val:.4f}"
+    snippet = [
+        "",
+        f"# --- 自动生成的回归拟合 ({fit['degree']} 阶, n={fit['n']}) ---",
+        "import numpy as np",
+        "import matplotlib.pyplot as plt",
+        "_fit_ax = plt.gca()",
+        f"_fit_x = np.linspace({fit['x_range'][0]!r}, {fit['x_range'][1]!r}, 200)",
+        f"_fit_ax.plot(_fit_x, np.polyval({fit['coefficients']!r}, _fit_x), color={color!r}, linewidth=1.5, label='fit')",
+        f"_fit_ax.text(0.03, 0.97, {label!r}, transform=_fit_ax.transAxes, ha='left', va='top', fontsize=8,",
+        "              bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8, edgecolor='none'))",
+        "# --- 回归拟合结束 ---",
+        "",
+    ]
+    return original_code.rstrip() + "\n" + "\n".join(snippet)
 
 
 def compute_omnibus_test(
@@ -164,10 +320,18 @@ def inject_stat_brackets(
     pairs: list[tuple[Any, Any]],
     test_type: str = "auto",
     correction_method: str = "bonferroni",
+    pair_col: str | None = None,
 ) -> tuple[str, list[dict]]:
     """向原有代码中注入标准显著性连线与星号标注代码。"""
     if not pairs:
         return original_code, []
+    if test_type not in TEST_TYPES:
+        raise ValueError(f"不支持的检验方法: {test_type}")
+    if correction_method not in CORRECTION_METHODS:
+        raise ValueError(f"不支持的 p 值校正方法: {correction_method}")
+    if test_type == "tukey":
+        # Tukey HSD p-values are already adjusted for all pairwise comparisons.
+        correction_method = "none"
 
     # 获取组的唯一顺序以确定横坐标索引
     unique_groups = [str(g) for g in df[group_col].dropna().unique()]
@@ -197,24 +361,23 @@ def inject_stat_brackets(
     snippets.append("_bracket_y = _y_max + _y_span * 0.05")
     snippets.append("_y_step = _y_span * 0.12")
 
-    for i, (g_a, g_b) in enumerate(sorted_pairs):
-        str_a, str_b = str(g_a), str(g_b)
-        stat_info = compare_groups(df, group_col, val_col, g_a, g_b, test_type)
-        results.append(stat_info)
-
-    if correction_method not in {"bonferroni", "fdr_bh"}:
-        raise ValueError(f"不支持的 p 值校正方法: {correction_method}")
+    if test_type == "tukey":
+        results = tukey_pairwise(df, group_col, val_col, sorted_pairs)
+    else:
+        for g_a, g_b in sorted_pairs:
+            results.append(compare_groups(df, group_col, val_col, g_a, g_b, test_type, pair_col=pair_col))
 
     # 计算多重比较校正 (Bonferroni 或 FDR)，并让图上的星号与所选方法一致。
     raw_p_values = [r["p_value"] for r in results]
     bonferroni_ps = adjust_p_values(raw_p_values, method="bonferroni")
     fdr_ps = adjust_p_values(raw_p_values, method="fdr_bh")
+    adjusted_ps = adjust_p_values(raw_p_values, method=correction_method)
 
     for i, stat_info in enumerate(results):
         stat_info["p_bonferroni"] = bonferroni_ps[i]
         stat_info["p_fdr"] = fdr_ps[i]
         stat_info["raw_stars"] = stat_info["stars"]
-        adjusted_p = bonferroni_ps[i] if correction_method == "bonferroni" else fdr_ps[i]
+        adjusted_p = adjusted_ps[i]
         stat_info["p_adjusted"] = adjusted_p
         stat_info["p_adjusted_formatted"] = (
             "p < 0.001" if adjusted_p < 0.001 else f"p = {adjusted_p:.4f}"

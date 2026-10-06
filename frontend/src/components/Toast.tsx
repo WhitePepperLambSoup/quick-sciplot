@@ -5,7 +5,9 @@ export interface ToastMessage {
   type?: "info" | "success" | "error" | "warning";
   title?: string;
   message: string;
+  /** Milliseconds before auto-dismiss; 0 keeps the toast until closed. */
   duration?: number;
+  action?: { label: string; onClick: () => void };
 }
 
 interface ToastProps {
@@ -55,6 +57,18 @@ function ToastItem({
       <div className="toast-body">
         {toast.title && <div className="toast-title">{toast.title}</div>}
         <div className="toast-message">{toast.message}</div>
+        {toast.action && (
+          <button
+            type="button"
+            className="btn small toast-action"
+            onClick={() => {
+              toast.action?.onClick();
+              onDismiss(toast.id);
+            }}
+          >
+            {toast.action.label}
+          </button>
+        )}
       </div>
       <button
         className="toast-close"

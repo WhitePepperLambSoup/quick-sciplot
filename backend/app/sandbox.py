@@ -11,7 +11,9 @@ import ast
 import base64
 import json
 import os
+import re
 import shutil
+import threading
 import subprocess
 import sys
 import time
@@ -120,7 +122,9 @@ def validate_script(code: str) -> None:
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
-        raise SandboxSyntaxError(f"代码语法错误: {exc}") from exc
+        error = SandboxSyntaxError(f"代码语法错误: {exc}")
+        error.lineno = exc.lineno
+        raise error from exc
 
     allowed = set(settings.sandbox_allowed_modules)
 
@@ -246,6 +250,13 @@ if _interactive_fig is not None and hasattr(_interactive_fig, "to_plotly_json"):
     except Exception as _exc:
         print(f"export plotly failed: {_exc}", file=_sys.stderr)
 else:
+    # Styles such as sns.set_style() replace font.sans-serif after the preamble
+    # set it, which turns CJK text into boxes.  Fonts are resolved at draw time,
+    # so append the CJK fallbacks again (after the user's own choices) before saving.
+    _cjk_fonts = ["SimHei", "Microsoft YaHei", "PingFang SC", "WenQuanYi Micro Hei", "Noto Sans CJK SC"]
+    _sans = list(matplotlib.rcParams["font.sans-serif"])
+    matplotlib.rcParams["font.sans-serif"] = _sans + [_f for _f in _cjk_fonts if _f not in _sans]
+    matplotlib.rcParams["axes.unicode_minus"] = False
     _fig = plt.gcf()
     try:
         _fig.tight_layout()
@@ -280,6 +291,92 @@ plt.close("all")
     return preamble + "\n" + user_code.strip() + "\n" + epilogue
 
 
+_CJK_FONT_FALLBACK = ["SimHei", "Microsoft YaHei", "PingFang SC", "WenQuanYi Micro Hei", "DejaVu Sans", "sans-serif"]
+
+
+def build_standalone_script(user_code: str, preset_id: str | None = None, data_file: str = "data.csv") -> str:
+    """Return a self-contained script that reproduces a figure outside the app.
+
+    Unlike the sandbox runner it reads the data from ``data_file`` next to the
+    script and saves ``figure.png``/``figure.pdf`` (or ``figure.html`` for
+    Plotly figures) in the working directory.
+    """
+    runtime = preset_registry.runtime_options(preset_id)
+    fallback = FALLBACK_RC_PARAMS[runtime["fallback"]]
+    header = f'''"""Quick SciPlot - reproducible figure script.
+
+Run it in the folder that contains {data_file}:
+
+    python plot.py
+
+Requires pandas and matplotlib, plus any of seaborn, scipy, statsmodels or
+plotly that the plotting code below imports.  Style preset: {runtime["id"]}.
+"""
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
+
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
+matplotlib.rcParams["font.sans-serif"] = {_CJK_FONT_FALLBACK!r}
+matplotlib.rcParams["axes.unicode_minus"] = False
+
+_styles = {runtime["styles"]!r}
+if _styles:
+    try:
+        import scienceplots  # noqa: F401  (pip install SciencePlots)
+
+        plt.style.use(_styles)
+    except Exception:
+        pass
+plt.rcParams.update({fallback!r})
+
+df = pd.read_csv({data_file!r})
+df.columns = [str(c).strip() for c in df.columns]
+
+# ----------------------------- plotting code -----------------------------
+'''
+    footer = f'''
+# --------------------------------- save ---------------------------------
+_figure = globals().get("fig")
+if _figure is not None and hasattr(_figure, "write_html"):
+    _figure.write_html("figure.html")
+else:
+    # Keep CJK fallback fonts even if a style call above replaced the font list.
+    _sans = list(matplotlib.rcParams["font.sans-serif"])
+    matplotlib.rcParams["font.sans-serif"] = _sans + [f for f in {_CJK_FONT_FALLBACK[:4]!r} if f not in _sans]
+    _figure = plt.gcf()
+    _figure.savefig("figure.png", dpi=300, bbox_inches="tight")
+    _figure.savefig("figure.pdf", bbox_inches="tight")
+'''
+    return header + user_code.strip() + "\n" + footer
+
+
+_SCRIPT_FRAME = re.compile(r'File "[^"]*(?:runner_script|worker-script)\.py", line (\d+)')
+
+
+def user_error_line(stderr: str, user_code: str, csv_path: Path, preset_id: str | None = None) -> int | None:
+    """Map the deepest traceback frame in the generated runner script to a line of ``user_code``.
+
+    The runner prepends a fixed preamble, so tracebacks refer to shifted line
+    numbers; the editor needs the line in the code the user actually sees.
+    """
+    matches = _SCRIPT_FRAME.findall(stderr or "")
+    if not matches:
+        return None
+    script = _build_script(user_code, csv_path, preset_id)
+    preamble_end = script.index("\n" + user_code.strip() + "\n") if user_code.strip() else -1
+    if preamble_end < 0:
+        return None
+    first_user_line = script.count("\n", 0, preamble_end + 1) + 1
+    stripped_leading = user_code[: len(user_code) - len(user_code.lstrip())].count("\n")
+    line = int(matches[-1]) - first_user_line + 1 + stripped_leading
+    total = len(user_code.splitlines())
+    return line if 1 <= line <= total else None
+
+
 def _clean_subprocess_env(output_paths: dict[str, Path], output_dir: Path) -> dict[str, str]:
     keep_keys = {
         "PATH",
@@ -307,7 +404,21 @@ def _clean_subprocess_env(output_paths: dict[str, Path], output_dir: Path) -> di
     return clean
 
 
-def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | None = None) -> dict:
+class SandboxCancelledError(SandboxError):
+    """The caller cancelled the run (for example the client disconnected)."""
+
+
+def _cancel_kwargs(cancel_event: threading.Event | None) -> dict:
+    return {"cancel_event": cancel_event} if cancel_event is not None else {}
+
+
+def run_plot_code(
+    code: str,
+    csv_path: Path,
+    output_dir: Path,
+    preset_id: str | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
     validate_script(code)
     preset_registry.get_preset(preset_id)
     csv_path = csv_path.resolve()
@@ -326,7 +437,7 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
                 "ALLOW_UNSAFE_PROCESS_SANDBOX=1"
             )
         if getattr(sys, "frozen", False):
-            proc = _run_frozen_worker(code, csv_path, output_dir, preset_id, output_paths)
+            proc = _run_frozen_worker(code, csv_path, output_dir, preset_id, output_paths, **_cancel_kwargs(cancel_event))
         else:
             script_path = output_dir / "runner_script.py"
             script_path.write_text(_build_script(code, csv_path, preset_id), encoding="utf-8")
@@ -336,11 +447,15 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
                 cwd=output_dir,
                 env=env,
                 monitored_paths=list(output_paths.values()),
+                **_cancel_kwargs(cancel_event),
             )
     elif execution_mode == "docker":
-        proc = _run_in_docker(code, csv_path, output_dir, preset_id)
+        proc = _run_in_docker(code, csv_path, output_dir, preset_id, **_cancel_kwargs(cancel_event))
     else:
         raise SandboxError(f"未知沙箱模式: {execution_mode}")
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise SandboxCancelledError("绘图已取消")
 
     oversized = [
         f"{format_name} ({path.stat().st_size // (1024 * 1024)}MB)"
@@ -356,6 +471,10 @@ def run_plot_code(code: str, csv_path: Path, output_dir: Path, preset_id: str | 
         "stderr": ((proc.stderr or "") + (f"\n{output_error}" if output_error else ""))[-4000:],
         "formats": [format_name for format_name, path in output_paths.items() if path.exists() and format_name != "meta"],
     }
+    if not result["success"]:
+        error_line = user_error_line(result["stderr"], code, csv_path, preset_id)
+        if error_line is not None:
+            result["error_line"] = error_line
     if result["success"]:
         if out_path.exists():
             result["image"] = _to_data_url(out_path)
@@ -386,6 +505,7 @@ def _run_frozen_worker(
     output_dir: Path,
     preset_id: str | None,
     output_paths: dict[str, Path],
+    cancel_event: threading.Event | None = None,
 ) -> subprocess.CompletedProcess:
     script_path = output_dir / "worker-script.py"
     script_path.write_text(_build_script(code, csv_path, preset_id, include_local_presets=False), encoding="utf-8")
@@ -396,12 +516,19 @@ def _run_frozen_worker(
             cwd=output_dir,
             env=env,
             monitored_paths=list(output_paths.values()),
+            **_cancel_kwargs(cancel_event),
         )
     finally:
         script_path.unlink(missing_ok=True)
 
 
-def _run_in_docker(code: str, csv_path: Path, output_dir: Path, preset_id: str | None) -> subprocess.CompletedProcess:
+def _run_in_docker(
+    code: str,
+    csv_path: Path,
+    output_dir: Path,
+    preset_id: str | None,
+    cancel_event: threading.Event | None = None,
+) -> subprocess.CompletedProcess:
     docker_binary = _find_docker()
     if docker_binary is None:
         raise SandboxUnavailableError(
@@ -490,6 +617,7 @@ def _run_in_docker(code: str, csv_path: Path, output_dir: Path, preset_id: str |
             env=None,
             monitored_paths=list(output_paths.values()),
             on_terminate=remove_container,
+            **_cancel_kwargs(cancel_event),
         )
     finally:
         script_path.unlink(missing_ok=True)
@@ -502,11 +630,13 @@ def _run_command(
     env: dict[str, str] | None,
     monitored_paths: list[Path] | None = None,
     on_terminate: Callable[[], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a renderer while keeping untrusted stdout/stderr off the heap.
 
-    ``on_terminate`` runs after the child was force-killed for a timeout or a
-    limit violation; Docker uses it to remove the (still running) container.
+    ``on_terminate`` runs after the child was force-killed for a timeout, a
+    limit violation or cancellation; Docker uses it to remove the (still
+    running) container.  Setting ``cancel_event`` stops the run early.
     """
     stdout_path = cwd / ".runner.stdout"
     stderr_path = cwd / ".runner.stderr"
@@ -545,6 +675,12 @@ def _run_command(
                 limit_error = _runner_limit_error(stdout_path, stderr_path, monitored_paths or [], cwd)
                 if limit_error:
                     returncode = -1
+                break
+
+            if cancel_event is not None and cancel_event.is_set():
+                _terminate_process(process, on_terminate)
+                returncode = -1
+                limit_error = "绘图已取消"
                 break
 
             if time.monotonic() >= deadline:

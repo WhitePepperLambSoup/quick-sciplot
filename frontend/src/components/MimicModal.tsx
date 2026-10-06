@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { mimicPlot } from "../api";
 import type { DatasetInfo, PlotResult } from "../types";
+import { useEscape } from "../utils";
 import type { Language } from "./ParameterInput";
 
 interface MimicModalProps {
@@ -39,6 +40,7 @@ export function MimicModal({ language, dataset, preset, onClose, onSuccess }: Mi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  useEscape(onClose, !busy);
 
   const handleFileChange = (file?: File) => {
     if (!file) return;

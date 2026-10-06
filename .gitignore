@@ -32,6 +32,7 @@ frontend/.vite/
 frontend/src-tauri/target/
 frontend/src-tauri/gen/
 frontend/src-tauri/binaries/
+frontend/src-tauri/backend-dist/
 *.tsbuildinfo
 
 # --- 运行时产物 ---

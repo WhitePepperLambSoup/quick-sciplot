@@ -8,6 +8,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN groupadd --gid 65532 sciplot \
     && useradd --uid 65532 --gid 65532 --create-home --shell /usr/sbin/nologin sciplot
 
+# WenQuanYi Micro Hei is one of the CJK fallback fonts the renderer configures;
+# without it Chinese labels render as empty boxes inside the container.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-wqy-microhei \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements-sandbox.lock.txt /tmp/requirements-sandbox.lock.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-sandbox.lock.txt \
     && mkdir -p /workspace/output /tmp/matplotlib \

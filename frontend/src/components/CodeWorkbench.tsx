@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { CodeParameter, PlotResult, StatementCard } from "../types";
+import { CodeEditor } from "./CodeEditor";
 import { ParameterInput, type Language } from "./ParameterInput";
 
 interface CodeWorkbenchProps {
@@ -28,6 +29,7 @@ export function CodeWorkbench({
   onCopyCode,
 }: CodeWorkbenchProps) {
   const [copied, setCopied] = useState(false);
+  const errorLine = result.run.success ? null : result.run.error_line ?? null;
 
   const handleCopy = async () => {
     const textToCopy = editorCode || result.code;
@@ -83,7 +85,7 @@ export function CodeWorkbench({
             return (
               <div
                 key={lineNumber}
-                className={`code-line${active ? " active" : ""}`}
+                className={`code-line${active ? " active" : ""}${lineNumber === errorLine ? " error-line" : ""}`}
                 onClick={() => statement && onSelectCard(statement)}
                 title={statement ? `${statement.label} (L${statement.start}-L${statement.end})` : undefined}
               >
@@ -147,14 +149,19 @@ export function CodeWorkbench({
         <div className="editor">
           <div className="editor-header">
             <div className="editor-label">
-              <span>{language === "zh" ? "Python 绘图源码（可直接编辑）" : "Python Script (Fully Editable)"}</span>
+              <span>{language === "zh" ? "Python 绘图源码（可直接编辑，Ctrl+Enter 运行）" : "Python script (editable, Ctrl+Enter to run)"}</span>
             </div>
+            {errorLine && editorCode === result.code && (
+              <span className="editor-error-badge">{language === "zh" ? `第 ${errorLine} 行出错` : `Error on line ${errorLine}`}</span>
+            )}
           </div>
-          <textarea
+          <CodeEditor
             value={editorCode}
-            onChange={(e) => onChangeEditorCode(e.target.value)}
-            spellCheck={false}
-            placeholder="# Python code will appear here..."
+            onChange={onChangeEditorCode}
+            errorLine={editorCode === result.code ? errorLine : null}
+            onRun={() => {
+              if (!busy) void onRunEditor();
+            }}
           />
         </div>
       </div>

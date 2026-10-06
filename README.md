@@ -10,23 +10,33 @@ Import one or more data files, describe the figure in natural language, and refi
 
 ## Features
 
-- Import CSV, TSV, TXT (tab, comma, or semicolon detected automatically), Excel, and JSON files with automatic data summaries.
-- Select multiple files and combine them by rows with a `source_file` provenance column; combined datasets can be combined again.
-- Generate Matplotlib, Seaborn, or Plotly figures through any OpenAI-compatible API, with optional automatic repair of failing code.
-- Choose SciencePlots, Nature, IEEE, LovelyPlots, and built-in fallback styles.
-- Inspect complete plotting code with line highlighting and bilingual data explanations.
-- Change x/y data columns, colors, alpha, line width, labels, and other parameters from forms.
-- **Significance annotation**: Welch's t-test / Mann-Whitney U, multi-group ANOVA / Kruskal-Wallis, Bonferroni or FDR correction, and brackets with stars drawn on the figure.
-- **Multi-panel composer**: 1×2, 2×1, 2×2, and 1+2 journal layouts with automatic A/B/C panel tags.
-- **Paper figure mimic**: describe or upload a reference figure and get matching code for your own data.
-- **Interactive correction**: drag reference lines and axis limits on the canvas; the code updates to match.
-- **Layout critique and journal compliance**: DPI, physical width, vector formats, and file size checks for Nature, IEEE, and Cell.
-- Save every generation, edit, parameter change, and restore as an SQLite revision.
-- Export PNG (300 DPI), SVG, PDF, EPS, and Plotly JSON.
-- Apply bounded streaming imports, controlled JSON/Excel parsing, concurrency limits, and output-history quotas.
-- Execute generated code in Docker by default; trusted local process mode requires explicit opt-in.
-- Use the same React WebUI in a browser or inside a Tauri 2 desktop GUI.
-- Switch the interface between Chinese and English.
+**Data**
+
+- Import CSV, TSV, TXT (tab, comma or semicolon detected automatically), Excel and JSON by button, Ctrl+O, or drag and drop.
+- **Data workbench**: page through the raw rows, filter, reshape wide tables to long, select or sort columns, drop missing values, and join two datasets on explicit keys. Every step creates a new dataset; the original is kept.
+- Combine several files by rows with a `source_file` provenance column.
+
+**Figures**
+
+- Generate Matplotlib, Seaborn or Plotly figures through any OpenAI-compatible API or a **local model** (Ollama, LM Studio). The code streams in as it is written, and you can **cancel** at any time.
+- **Templates** that need no model: volcano plot, Kaplan-Meier survival with log-rank test, PCA, clustered heatmap, dose-response (4PL with EC50), correlation triangle, and bar + points with SD/SEM.
+- **Statistics**: Welch's t, Mann-Whitney U, paired t, Wilcoxon signed-rank and Tukey HSD with Bonferroni, FDR or no correction, drawn as brackets and stars; **regression fitting** with the equation and R² on the figure.
+- **Multi-panel composer** with seven journal layouts, **paper figure mimic**, and **interactive correction** of reference lines and x/y limits for both Matplotlib and Plotly figures.
+- **Layout critique** with fast rule checks or an **AI vision review**, and **journal compliance** (Nature, IEEE, Cell) with a one-click fit to single- or double-column width.
+- SciencePlots, Nature, IEEE, LovelyPlots and built-in fallback styles.
+
+**Code and history**
+
+- A full code editor with syntax highlighting, undo, Ctrl+Enter to run, and the failing line highlighted when a run errors.
+- Every generation, edit and restore is saved as a revision. Name and star revisions (starred ones are never cleaned up) and **compare** any two side by side with a code diff.
+- **Batch plotting**: apply the current code to many datasets and download all figures as a zip.
+- Export PNG (300 DPI), SVG, PDF, EPS, Plotly JSON, a **standalone Python script**, or a **reproducible project bundle** (data + script + figures).
+
+**Desktop app**
+
+- A **first-run wizard** checks Docker, builds the sandbox image from inside the app, or, after you confirm the risk, enables the bundled local worker.
+- The backend starts in a few seconds, and the app **updates itself** from signed GitHub releases.
+- The same React UI also runs in a browser. Chinese and English interface.
 
 ## Architecture
 
@@ -35,9 +45,9 @@ React + Vite WebUI
         │ browser or Tauri WebView
         ▼
 FastAPI local backend
-        ├── LLM provider adapter
-        ├── AST code locator and parameter editor
-        ├── Docker / explicitly enabled process sandbox / packaged worker
+        ├── LLM provider adapter (OpenAI-compatible, local models, streaming)
+        ├── AST code locator, parameter editor, templates and statistics
+        ├── Docker sandbox / explicitly enabled local worker
         ├── SQLite revision history
         └── Matplotlib / Seaborn / Plotly renderer
 ```
@@ -80,9 +90,18 @@ cd frontend
 npm run desktop:dev
 ```
 
-### Windows installer
+### Windows desktop app
 
-Install build dependencies first:
+Download the NSIS (`*-setup.exe`) or MSI installer from [Releases](https://github.com/WhitePepperLambSoup/quick-sciplot/releases). Python is not required. The installers are not code-signed yet, so Windows SmartScreen may ask you to confirm (**More info → Run anyway**).
+
+On first launch the setup wizard offers two ways to run generated code:
+
+- **Docker sandbox (recommended)**: install and start Docker Desktop, then click **Build sandbox image** in the wizard.
+- **Local worker**: runs code in a separate local process with static checks and limits. It is not an OS-level sandbox, so the wizard asks you to confirm before enabling it.
+
+Configuration and data live under `%APPDATA%\com.quicksciplot.desktop\` (`config\.env` and `data\`). Installed apps check GitHub Releases for updates on start-up.
+
+To build the installers yourself:
 
 ```bash
 cd backend
@@ -91,38 +110,30 @@ cd ..\frontend
 npm run desktop:build
 ```
 
-The NSIS and MSI installers are generated under `frontend/src-tauri/target/release/bundle/`.
-The release build includes a PyInstaller backend sidecar and does not require Python on the target machine. Prebuilt installers are attached to [Releases](https://github.com/WhitePepperLambSoup/quick-sciplot/releases).
+The NSIS and MSI installers are generated under `frontend/src-tauri/target/release/bundle/`. Release builds also produce signed updater artifacts, so set `TAURI_SIGNING_PRIVATE_KEY` (the updater private key file content or path) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` first, then create `latest.json` for the release:
 
-The desktop app keeps its configuration and data under `%APPDATA%\com.quicksciplot.desktop\` (`config\.env` and `data\`). It uses the Docker sandbox by default, so install Docker Desktop and build the sandbox image as described below. For trusted local use without Docker, add these two lines to `config\.env` and restart the app to use the bundled worker instead (this is not an OS-level sandbox):
-
-```text
-SANDBOX_MODE=process
-ALLOW_UNSAFE_PROCESS_SANDBOX=1
+```bash
+node scripts/make-latest-json.mjs 0.3.0 "src-tauri/target/release/bundle/nsis/Quick SciPlot_0.3.0_x64-setup.exe" https://github.com/WhitePepperLambSoup/quick-sciplot/releases/download/v0.3.0/Quick-SciPlot_0.3.0_x64-setup.exe
 ```
 
-### Docker sandbox (default)
+### Docker sandbox
 
-Build the sandbox image before starting the backend:
+The desktop wizard can build the image for you. From the repository:
 
 ```bash
 cd backend
-docker build -f Dockerfile.sandbox -t quick-sciplot-sandbox:0.2.0 .
+docker build -f Dockerfile.sandbox -t quick-sciplot-sandbox:0.3.0 .
 ```
 
-Docker mode is the default and is required for untrusted generated code. The backend fails closed if Docker is unavailable.
+Docker mode is the default and is required for untrusted generated code. The backend fails closed if Docker is unavailable. For trusted local development without Docker, set both `SANDBOX_MODE=process` and `ALLOW_UNSAFE_PROCESS_SANDBOX=1`; this mode is not an OS-level sandbox.
 
-For trusted local development without Docker, explicitly set both `SANDBOX_MODE=process` and `ALLOW_UNSAFE_PROCESS_SANDBOX=1`; this mode is not an OS-level sandbox.
+### Local models
+
+In **Settings**, choose **Ollama (local)** or **LM Studio (local)**, or enter any `http://127.0.0.1:<port>/v1` endpoint, and enable **Allow a model server on this machine**. No API key is needed and data stays on your computer. **Fetch list** reads the available models from the server. This switch only allows loopback addresses; other private network addresses still require `ALLOW_LOCAL_NETWORK_LLM=1`.
 
 ### Resource limits
 
-Uploads are streamed to disk and bounded by per-file and per-batch limits. JSON uses controlled parsing with a nesting limit; CSV/TSV/Excel/JSON imports enforce row, column, cell, sheet, and Excel ZIP expansion limits. Failed multi-file imports roll back datasets already created in that batch. Renderer logs and each output file are limited during execution, the output directory is capped at 128 MiB, and revision history is pruned by both total output bytes and per-dataset revision count. Runtime `.env` updates use a temporary file, `fsync`, and atomic replacement.
-
-## Multiple Files
-
-Multiple imported files remain independent until the user selects them and clicks **Combine selected**. The application concatenates rows, keeps the union of columns, fills unavailable values with missing values, and adds `source_file` so the AI can group or color by origin.
-
-The application deliberately does not guess join keys. Relational joins can be added later when the user specifies an explicit key and join type.
+Uploads are streamed to disk and bounded by per-file and per-batch limits. JSON uses controlled parsing with a nesting limit; CSV/TSV/Excel/JSON imports enforce row, column, cell, sheet, and Excel ZIP expansion limits. Failed multi-file imports roll back datasets already created in that batch. Joins are refused when the estimated result exceeds the row limit. Renderer logs and each output file are limited during execution, the output directory is capped at 128 MiB, and revision history is pruned by both total output bytes and per-dataset revision count (starred revisions are kept). Runtime `.env` updates use a temporary file, `fsync`, and atomic replacement.
 
 ## Evaluation
 
@@ -143,16 +154,18 @@ python evaluate.py --model-config model_matrix.example.json \
 
 ## Security
 
-LLM-generated Python code is executed locally. This project is a single-user local tool, not a multi-tenant service. Docker mode is the default boundary: it disables networking, uses a read-only root filesystem, drops capabilities, runs as a non-root user, and applies resource limits. Process mode only adds static checks, a separate process, and timeouts; it is not an OS-level sandbox and must be explicitly enabled for trusted local use.
+LLM-generated Python code is executed locally. This project is a single-user local tool, not a multi-tenant service. Docker mode is the default boundary: it disables networking, uses a read-only root filesystem, drops capabilities, runs as a non-root user, and applies resource limits. The local worker only adds static checks, a separate process, and timeouts; it is not an OS-level sandbox. It can be enabled from the UI only in the desktop app and only after explicit confirmation.
 
 The backend only binds to loopback addresses and authenticates with a session token: browsers use an HttpOnly cookie, and the desktop app receives the token from the Tauri shell and sends it as a request header. To defend against DNS rebinding, requests are only accepted when the Host header is `localhost`, `127.0.0.1`, or `::1` (configurable through `ALLOWED_HOSTS`).
+
+The **AI vision review** sends the rendered figure image to the configured model provider; the quick critique does not. Desktop updates are verified against the public key in `tauri.conf.json` before installation.
 
 Do not expose the current local FastAPI service to the public internet. See [SECURITY.md](SECURITY.md).
 
 ## Repository Layout
 
-- `backend/`: FastAPI service, data processing, LLM adapter, sandbox, tests, and sidecar build scripts.
-- `frontend/`: React + Vite WebUI and Tauri 2 desktop shell in `src-tauri/`.
+- `backend/`: FastAPI service, data processing, LLM adapter, sandbox, templates, tests, and sidecar build scripts.
+- `frontend/`: React + Vite WebUI and Tauri 2 desktop shell in `src-tauri/`; release helper scripts in `scripts/`.
 - `docs/`: research and evaluation documentation.
 - `presets/`, `references/`, `skills/`: optional local third-party repositories, ignored by Git.
 

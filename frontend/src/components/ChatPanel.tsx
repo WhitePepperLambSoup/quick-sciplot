@@ -1,6 +1,13 @@
+import { useEffect, useRef, useState } from "react";
 import { isCategoricalColumn, isNumericColumn } from "../columns";
-import type { ChatMessage, DatasetInfo } from "../types";
+import type { ChatMessage, DatasetInfo, StreamStage } from "../types";
 import type { Language } from "./ParameterInput";
+
+export interface StreamState {
+  stage: StreamStage;
+  text: string;
+  startedAt: number;
+}
 
 interface ChatPanelProps {
   language: Language;
@@ -9,8 +16,46 @@ interface ChatPanelProps {
   input: string;
   busy: boolean;
   disabled: boolean;
+  stream?: StreamState | null;
+  onCancel?: () => void;
   onChangeInput: (val: string) => void;
   onSend: () => void;
+}
+
+const STAGE_LABELS: Record<StreamStage, { zh: string; en: string }> = {
+  llm: { zh: "模型正在编写代码", en: "Model is writing code" },
+  render: { zh: "正在执行并渲染", en: "Running and rendering" },
+  repair: { zh: "出错了，正在自动修复", en: "Auto-repairing an error" },
+};
+
+function StreamBubble({ language, stream, onCancel }: { language: Language; stream: StreamState; onCancel?: () => void }) {
+  const [now, setNow] = useState(Date.now());
+  const codeRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (codeRef.current) codeRef.current.scrollTop = codeRef.current.scrollHeight;
+  }, [stream.text]);
+  const seconds = Math.max(0, Math.round((now - stream.startedAt) / 1000));
+  const label = STAGE_LABELS[stream.stage][language];
+  return (
+    <div className="msg assistant streaming">
+      <div className="stream-head">
+        <span className="stream-dot" />
+        <span>
+          {label} · {seconds}s
+        </span>
+        {onCancel && (
+          <button type="button" className="btn secondary small" onClick={onCancel}>
+            {language === "zh" ? "取消" : "Cancel"}
+          </button>
+        )}
+      </div>
+      {stream.text && <pre ref={codeRef} className="stream-code">{stream.text}</pre>}
+    </div>
+  );
 }
 
 export function ChatPanel({
@@ -20,6 +65,8 @@ export function ChatPanel({
   input,
   busy,
   disabled,
+  stream,
+  onCancel,
   onChangeInput,
   onSend,
 }: ChatPanelProps) {
@@ -106,6 +153,7 @@ export function ChatPanel({
             <div>{m.content}</div>
           </div>
         ))}
+        {stream && <StreamBubble language={language} stream={stream} onCancel={onCancel} />}
       </div>
 
       {dataset && suggestions.length > 0 && (

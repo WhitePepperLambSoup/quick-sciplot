@@ -11,7 +11,8 @@ interface InteractiveManipulatorProps {
   onClose: () => void;
 }
 
-type ActiveTool = "hline" | "vline" | "ylim";
+type ActiveTool = "hline" | "vline" | "ylim" | "xlim";
+type DragTarget = "hline" | "vline" | "ylim-top" | "ylim-bottom" | "xlim-left" | "xlim-right";
 
 export function InteractiveManipulator({
   language,
@@ -36,9 +37,10 @@ export function InteractiveManipulator({
   const [currentHlineY, setCurrentHlineY] = useState<number>(initialHline);
   const [currentVlineX, setCurrentVlineX] = useState<number>(initialVline);
   const [currentYlim, setCurrentYlim] = useState<[number, number]>(ylim);
+  const [currentXlim, setCurrentXlim] = useState<[number, number]>(xlim);
 
   // 拖拽中的临时交互状态
-  const [draggingTarget, setDraggingTarget] = useState<"hline" | "vline" | "ylim-top" | "ylim-bottom" | null>(null);
+  const [draggingTarget, setDraggingTarget] = useState<DragTarget | null>(null);
   const [dragValueLabel, setDragValueLabel] = useState<string>("");
 
   // 监听容器实际尺寸
@@ -76,6 +78,12 @@ export function InteractiveManipulator({
     }
   }, [meta?.ylim]);
 
+  useEffect(() => {
+    if (meta?.xlim) {
+      setCurrentXlim(meta.xlim);
+    }
+  }, [meta?.xlim]);
+
   // 计算 Matplotlib 轴区在当前容器中的绝对像素几何 [plotLeft, plotTop, plotWidth, plotHeight]
   const bbox = meta?.bbox || [0.125, 0.11, 0.775, 0.77]; // [left, bottom, width, height]
   const plotLeft = dimensions.width * bbox[0];
@@ -104,18 +112,18 @@ export function InteractiveManipulator({
 
   const xDataToPixel = useCallback(
     (x: number) => {
-      const span = xlim[1] - xlim[0] || 1e-4;
-      return plotLeft + ((x - xlim[0]) / span) * plotWidth;
+      const span = currentXlim[1] - currentXlim[0] || 1e-4;
+      return plotLeft + ((x - currentXlim[0]) / span) * plotWidth;
     },
-    [xlim, plotLeft, plotWidth]
+    [currentXlim, plotLeft, plotWidth]
   );
 
   const xPixelToData = useCallback(
     (px: number) => {
-      const span = xlim[1] - xlim[0] || 1e-4;
-      return xlim[0] + ((px - plotLeft) / plotWidth) * span;
+      const span = currentXlim[1] - currentXlim[0] || 1e-4;
+      return currentXlim[0] + ((px - plotLeft) / plotWidth) * span;
     },
-    [xlim, plotLeft, plotWidth]
+    [currentXlim, plotLeft, plotWidth]
   );
 
   // 鼠标拖动处理
@@ -153,6 +161,20 @@ export function InteractiveManipulator({
         setCurrentYlim([rounded, currentYlim[1]]);
         setDragValueLabel(`Y-Min = ${rounded}`);
       }
+    } else if (draggingTarget === "xlim-left") {
+      const val = xPixelToData(px);
+      if (val < currentXlim[1] - 1e-6) {
+        const rounded = Number(val.toFixed(3));
+        setCurrentXlim([rounded, currentXlim[1]]);
+        setDragValueLabel(`X-Min = ${rounded}`);
+      }
+    } else if (draggingTarget === "xlim-right") {
+      const val = xPixelToData(px);
+      if (val > currentXlim[0] + 1e-6) {
+        const rounded = Number(val.toFixed(3));
+        setCurrentXlim([currentXlim[0], rounded]);
+        setDragValueLabel(`X-Max = ${rounded}`);
+      }
     }
   };
 
@@ -168,8 +190,13 @@ export function InteractiveManipulator({
       await onAdjust("vline", { x: currentVlineX, color: "blue", linestyle: "--", label: "Marker" });
     } else if (target === "ylim-top" || target === "ylim-bottom") {
       await onAdjust("ylim", { ymin: currentYlim[0], ymax: currentYlim[1] });
+    } else if (target === "xlim-left" || target === "xlim-right") {
+      await onAdjust("xlim", { xmin: currentXlim[0], xmax: currentXlim[1] });
     }
   };
+
+  const xlimLeftPixelX = xDataToPixel(currentXlim[0]);
+  const xlimRightPixelX = xDataToPixel(currentXlim[1]);
 
   const hlinePixelY = Math.max(plotTop, Math.min(plotBottom, yDataToPixel(currentHlineY)));
   const vlinePixelX = Math.max(plotLeft, Math.min(plotRight, xDataToPixel(currentVlineX)));
@@ -219,7 +246,17 @@ export function InteractiveManipulator({
             title="拉动坐标轴上/下边界手柄扩展范围 (ax.set_ylim)"
           >
             <span>↕️</span>
-            <span>{language === "zh" ? "坐标范围" : "Axis Limits"}</span>
+            <span>{language === "zh" ? "Y 轴范围" : "Y limits"}</span>
+          </button>
+
+          <button
+            type="button"
+            className={`manipulator-tool-btn${activeTool === "xlim" ? " active" : ""}`}
+            onClick={() => setActiveTool("xlim")}
+            title="拉动坐标轴左/右边界手柄调整范围 (ax.set_xlim)"
+          >
+            <span>↔️</span>
+            <span>{language === "zh" ? "X 轴范围" : "X limits"}</span>
           </button>
         </div>
 
@@ -343,6 +380,31 @@ export function InteractiveManipulator({
               <span>▼ Y-Min: {currentYlim[0]}</span>
             </div>
           </div>
+        </>
+      )}
+
+      {/* 4. X 轴范围左右边界 */}
+      {(activeTool === "xlim" || draggingTarget?.startsWith("xlim")) && (
+        <>
+          {([
+            ["xlim-left", xlimLeftPixelX, `◀ X-Min: ${currentXlim[0]}`],
+            ["xlim-right", xlimRightPixelX, `X-Max: ${currentXlim[1]} ▶`],
+          ] as [DragTarget, number, string][]).map(([target, left, text]) => (
+            <div
+              key={target}
+              className={`manipulator-limit-rail vertical${draggingTarget === target ? " active" : ""}`}
+              style={{ left: `${left}px`, top: `${plotTop}px`, height: `${plotHeight}px` }}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                setDraggingTarget(target);
+                setDragValueLabel(text);
+              }}
+            >
+              <div className="limit-handle-pill">
+                <span>{text}</span>
+              </div>
+            </div>
+          ))}
         </>
       )}
 

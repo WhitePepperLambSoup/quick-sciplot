@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Docker is the only production-safe execution boundary.  The local
     # subprocess mode is retained for explicitly trusted development setups.
     sandbox_mode: str = "docker"
-    docker_image: str = "quick-sciplot-sandbox:0.2.0"
+    docker_image: str = "quick-sciplot-sandbox:0.3.0"
 
     # 服务
     host: str = "127.0.0.1"
@@ -78,7 +78,12 @@ class Settings(BaseSettings):
     # 会话 cookie，因此必须拒绝 DNS 重绑定页面（Host 为攻击者域名）发来的请求。
     allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1", "::1")
     allow_local_network_llm: bool = False
+    # 只放行本机回环地址上的模型服务（Ollama、LM Studio 等），比放开整个内网更窄。
+    allow_loopback_llm: bool = False
     allow_unsafe_process_sandbox: bool = False
+    # 由 Tauri 桌面壳设置。只有桌面版允许在界面里确认风险后启用本地 worker：
+    # 打包版没有 Docker 时否则完全无法出图；浏览器开发模式仍需通过环境变量开启。
+    quick_sciplot_desktop: bool = False
 
     @field_validator("data_dir")
     @classmethod
@@ -98,7 +103,11 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-def _is_blocked_address(address: ipaddress._BaseAddress, allow_local_network: bool) -> bool:
+def _is_blocked_address(
+    address: ipaddress._BaseAddress,
+    allow_local_network: bool,
+    allow_loopback: bool = False,
+) -> bool:
     """Return whether an IP is unsafe for an outbound LLM connection."""
     # Cloud metadata endpoints remain blocked even when a user enables local
     # network access.  That switch is for trusted on-prem LLMs, not metadata.
@@ -111,12 +120,36 @@ def _is_blocked_address(address: ipaddress._BaseAddress, allow_local_network: bo
         return True
     if address.is_unspecified or address.is_multicast or address.is_reserved:
         return True
+    if allow_loopback and address.is_loopback:
+        return False
     if not allow_local_network and (address.is_loopback or address.is_private or address.is_link_local):
         return True
     return False
 
 
-def validate_safe_llm_url(url: str, allow_local_network: bool = False) -> None:
+def llm_url_options() -> dict[str, bool]:
+    """Current network permissions for LLM endpoints, as validate_safe_llm_url kwargs."""
+    return {
+        "allow_local_network": settings.allow_local_network_llm,
+        "allow_loopback": settings.allow_loopback_llm,
+    }
+
+
+def is_loopback_url(url: str) -> bool:
+    """Whether ``url`` points at this machine (localhost or a loopback IP)."""
+    try:
+        hostname = (urlparse(url.strip()).hostname or "").rstrip(".").lower()
+    except (AttributeError, ValueError):
+        return False
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_safe_llm_url(url: str, allow_local_network: bool = False, allow_loopback: bool = False) -> None:
     """Validate an LLM URL, including every address returned by DNS.
 
     This is intentionally a conservative preflight check.  Redirects are also
@@ -151,44 +184,52 @@ def validate_safe_llm_url(url: str, allow_local_network: bool = False) -> None:
         "169.254.170.2",
         "metadata.google.internal",
         "instance-data",
-        "localhost",
         "localhost.localdomain",
         "0.0.0.0",
         "::",
     }
+    if not allow_loopback:
+        dangerous_hostnames.add("localhost")
     if hostname in dangerous_hostnames:
         raise ValueError(f"禁止访问元数据服务或不安全主机: {hostname}")
 
     addresses: list[ipaddress._BaseAddress] = []
-    try:
-        literal = ipaddress.ip_address(hostname)
-    except ValueError:
-        # Numeric-but-non-canonical host forms (decimal, octal-like, or mixed
-        # dotted values) have historically been interpreted inconsistently by
-        # URL parsers and DNS libraries.  Reject them rather than normalizing.
-        if re.fullmatch(r"[0-9.]+", hostname):
-            raise ValueError(f"不接受非标准数字主机名: {hostname}")
-        try:
-            idna_hostname = hostname.encode("idna").decode("ascii")
-            infos = socket.getaddrinfo(idna_hostname, port, type=socket.SOCK_STREAM)
-        except (UnicodeError, socket.gaierror, OSError) as exc:
-            raise ValueError(f"无法解析 LLM 主机名: {hostname}") from exc
-        for info in infos:
-            sockaddr = info[4]
-            if sockaddr:
-                try:
-                    addresses.append(ipaddress.ip_address(sockaddr[0]))
-                except ValueError as exc:
-                    raise ValueError(f"DNS 返回了无效地址: {sockaddr[0]}") from exc
+    if hostname == "localhost":
+        # Only reachable when allow_loopback is set (otherwise rejected above);
+        # do not trust DNS for it.
+        addresses.append(ipaddress.ip_address("127.0.0.1"))
     else:
-        addresses.append(literal)
+        try:
+            addresses.append(ipaddress.ip_address(hostname))
+        except ValueError:
+            # Numeric-but-non-canonical host forms (decimal, octal-like, or mixed
+            # dotted values) have historically been interpreted inconsistently by
+            # URL parsers and DNS libraries.  Reject them rather than normalizing.
+            if re.fullmatch(r"[0-9.]+", hostname):
+                raise ValueError(f"不接受非标准数字主机名: {hostname}")
+            try:
+                idna_hostname = hostname.encode("idna").decode("ascii")
+                infos = socket.getaddrinfo(idna_hostname, port, type=socket.SOCK_STREAM)
+            except (UnicodeError, socket.gaierror, OSError) as exc:
+                raise ValueError(f"无法解析 LLM 主机名: {hostname}") from exc
+            for info in infos:
+                sockaddr = info[4]
+                if sockaddr:
+                    try:
+                        addresses.append(ipaddress.ip_address(sockaddr[0]))
+                    except ValueError as exc:
+                        raise ValueError(f"DNS 返回了无效地址: {sockaddr[0]}") from exc
 
     if not addresses:
         raise ValueError(f"LLM 主机名没有可用地址: {hostname}")
     for address in addresses:
-        if _is_blocked_address(address, allow_local_network):
+        if _is_blocked_address(address, allow_local_network, allow_loopback):
             raise ValueError(f"禁止访问私有、回环、链路本地或保留地址: {address}")
-    if port not in {80, 443} and not allow_local_network:
+    all_loopback = all(address.is_loopback for address in addresses)
+    if all_loopback and port == settings.port:
+        # Never let the model client call this backend itself.
+        raise ValueError("LLM Base URL 不能指向 Quick SciPlot 自身的服务端口")
+    if port not in {80, 443} and not allow_local_network and not (allow_loopback and all_loopback):
         raise ValueError("LLM Base URL 只允许使用 80 或 443 端口")
 
 
@@ -211,13 +252,10 @@ def validate_local_bind_host(host: str) -> None:
 def validate_initial_settings() -> None:
     """Fail closed for non-local service bindings or unsafe LLM endpoints."""
     validate_local_bind_host(settings.host)
-    if not settings.llm_api_key:
+    if not settings.llm_api_key and not (settings.allow_loopback_llm and is_loopback_url(settings.llm_base_url)):
         return
     try:
-        validate_safe_llm_url(
-            settings.llm_base_url,
-            allow_local_network=settings.allow_local_network_llm,
-        )
+        validate_safe_llm_url(settings.llm_base_url, **llm_url_options())
     except ValueError as exc:
         raise RuntimeError(f"LLM_BASE_URL 配置不安全: {exc}") from exc
 
@@ -321,6 +359,8 @@ def public_config() -> dict:
         "sandbox_mode": settings.sandbox_mode,
         "send_data_values": settings.llm_send_data_values,
         "auth_enabled": settings.require_auth,
+        "allow_loopback_llm": settings.allow_loopback_llm,
+        "desktop": settings.quick_sciplot_desktop,
     }
     return res
 
@@ -334,6 +374,7 @@ def update_runtime_config(
     auto_repair_attempts: int | None = None,
     sandbox_mode: str | None = None,
     send_data_values: bool | None = None,
+    allow_loopback_llm: bool | None = None,
 ) -> dict:
     """更新当前进程，并同步到被 .gitignore 保护的本地 .env。"""
     _validate_runtime_config_updates(
@@ -342,6 +383,7 @@ def update_runtime_config(
         model=model,
         auto_repair_attempts=auto_repair_attempts,
         sandbox_mode=sandbox_mode,
+        allow_loopback_llm=allow_loopback_llm,
     )
     updates: dict[str, str] = {}
     settings_updates: dict[str, object] = {}
@@ -367,6 +409,9 @@ def update_runtime_config(
     if send_data_values is not None:
         updates["LLM_SEND_DATA_VALUES"] = "1" if send_data_values else "0"
         settings_updates["llm_send_data_values"] = send_data_values
+    if allow_loopback_llm is not None:
+        updates["ALLOW_LOOPBACK_LLM"] = "1" if allow_loopback_llm else "0"
+        settings_updates["allow_loopback_llm"] = allow_loopback_llm
     if updates:
         _persist_env(updates)
         for key, value in settings_updates.items():
@@ -381,15 +426,16 @@ def _validate_runtime_config_updates(
     model: str | None,
     auto_repair_attempts: int | None,
     sandbox_mode: str | None,
+    allow_loopback_llm: bool | None = None,
 ) -> None:
     for value in (api_key, base_url, model):
         if value is not None and any(char in value for char in "\r\n"):
             raise ValueError("配置值不能包含换行符")
     if base_url is not None:
-        validate_safe_llm_url(
-            base_url,
-            allow_local_network=settings.allow_local_network_llm,
-        )
+        options = llm_url_options()
+        if allow_loopback_llm is not None:
+            options["allow_loopback"] = allow_loopback_llm
+        validate_safe_llm_url(base_url, **options)
     if model is not None and not model.strip():
         raise ValueError("模型名称不能为空")
     if auto_repair_attempts is not None and not 0 <= auto_repair_attempts <= 3:

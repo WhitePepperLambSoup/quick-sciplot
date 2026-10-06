@@ -4,10 +4,40 @@
 并输出针对性的自愈修复指令。
 """
 
+import base64
+import io
 from pathlib import Path
+
 from PIL import Image
 
+from . import llm
 from .compliance_checker import dpi_from_image_info
+
+MAX_VISION_EDGE = 1600
+
+
+def _vision_data_url(image_path: Path) -> str:
+    """Downscaled PNG data URL: a 300 DPI figure is far larger than a model needs."""
+    with Image.open(image_path) as image:
+        image = image.convert("RGB")
+        image.thumbnail((MAX_VISION_EDGE, MAX_VISION_EDGE))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG", optimize=True)
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def ai_critique(image_path: Path, code: str) -> dict:
+    """Review the rendered figure with a multimodal model; errors are reported, not raised."""
+    if not image_path.is_file():
+        return {"available": False, "error": "未找到输出图像文件"}
+    try:
+        review = llm.critique_image(_vision_data_url(image_path), code)
+    except llm.LLMError as exc:
+        return {
+            "available": False,
+            "error": f"AI 视觉体检失败（当前模型可能不支持图像输入）：{exc}",
+        }
+    return {"available": True, **review}
 
 
 def critique_figure_image(image_path: Path, code: str) -> dict:

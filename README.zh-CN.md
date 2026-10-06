@@ -10,22 +10,33 @@ Quick SciPlot 是一个开源的 AI 辅助科研画图桌面/网页应用。
 
 ## 主要功能
 
-- 支持 CSV、TSV、TXT（自动识别制表符/逗号/分号）、Excel、JSON，并自动生成数据摘要。
-- 一次导入多个文件，勾选后可按行合并，并增加 `source_file` 来源列；已合并的数据集可以继续合并。
-- 通过 OpenAI 兼容 API 生成 Matplotlib、Seaborn 或 Plotly 图表，失败时可自动调用模型修复。
-- 支持 SciencePlots、Nature、IEEE、LovelyPlots 以及内置兜底风格。
-- 完整代码查看、行高亮和每条绘图语句的中英文解释。
-- 可直接选择 x/y 数据列，也可以调整颜色、透明度、线宽、标签等参数。
-- **统计显著性标注**：Welch t 检验 / Mann-Whitney U、多组 ANOVA / Kruskal-Wallis，Bonferroni 或 FDR 校正后在图上添加括号和星号。
-- **多图拼版**：1×2、2×1、2×2、1+2 等期刊常用布局，自动添加 A/B/C 子图标号。
-- **论文图复刻**：上传参考图截图或描述版式，按自己的数据生成风格相近的代码。
-- **交互式修正**：在画布上拖动参考线和坐标范围，代码同步更新。
-- **排版体检与期刊合规检查**：检查 DPI、物理宽度、矢量格式和文件大小（Nature / IEEE / Cell）。
-- SQLite 保存生成、编辑、参数调整和恢复历史。
-- 支持 PNG（300 DPI）、SVG、PDF、EPS 和 Plotly JSON 导出。
-- 默认在 Docker 中执行生成代码；可信本机 process 模式必须显式启用。
-- 同一套 React WebUI 可在浏览器运行，也可嵌入 Tauri 2 桌面 GUI。
-- 支持中文/English 界面切换。
+**数据**
+
+- 支持 CSV、TSV、TXT（自动识别制表符/逗号/分号）、Excel、JSON；可点按钮、按 Ctrl+O 或直接把文件拖进窗口导入。
+- **数据工作台**：分页查看原始数据，筛选行、宽表转长表、选择/排序列、删除缺失值，并可按指定键连接两个数据集。每一步都会生成新数据集，原数据不变。
+- 多个文件可按行合并，并增加 `source_file` 来源列。
+
+**作图**
+
+- 通过任意 OpenAI 兼容 API 或**本机模型**（Ollama、LM Studio）生成 Matplotlib、Seaborn、Plotly 图表。代码边生成边显示，可随时**取消**。
+- **科研图模板**（不调用模型）：火山图、Kaplan-Meier 生存曲线（含 log-rank 检验）、PCA、聚类热图、剂量反应曲线（4PL，标注 EC50）、相关性下三角热图、柱状图 + 散点（SD/SEM）。
+- **统计**：Welch t、Mann-Whitney U、配对 t、Wilcoxon 符号秩、Tukey HSD，可选 Bonferroni、FDR 或不校正，自动画括号与星号；**回归拟合**并在图上标注方程与 R²。
+- **多图拼版**（7 种期刊布局）、**论文图复刻**、**交互式修正**（Matplotlib 与 Plotly 图都支持参考线和 X/Y 轴范围）。
+- **排版体检**：规则快速检查或 **AI 视觉审查**；**期刊合规**（Nature / IEEE / Cell），一键适配单栏或双栏宽度。
+- SciencePlots、Nature、IEEE、LovelyPlots 以及内置兜底风格。
+
+**代码与版本**
+
+- 完整代码编辑器：语法高亮、撤销、Ctrl+Enter 运行，运行出错时高亮出错行。
+- 每次生成、编辑、恢复都会保存为版本；可命名、收藏（收藏的版本不会被自动清理），并**对比**任意两个版本的图片与代码差异。
+- **批量出图**：把当前代码套用到多个数据集，打包下载全部图片。
+- 导出 PNG（300 DPI）、SVG、PDF、EPS、Plotly JSON、**可独立运行的 Python 脚本**，或**可复现项目包**（数据 + 脚本 + 图片）。
+
+**桌面版**
+
+- **首次启动向导**：检查 Docker，可在应用内构建沙箱镜像；或在确认风险后启用内置的本地 worker。
+- 后端几秒内启动，并可从 GitHub 已签名的发布版本**自动更新**。
+- 同一套 React 界面也可在浏览器中运行，支持中文 / English。
 
 ## 软件架构
 
@@ -34,9 +45,9 @@ React + Vite WebUI
         │ 浏览器或 Tauri WebView
         ▼
 本地 FastAPI 后端
-        ├── LLM provider 适配层
-        ├── AST 代码定位与参数编辑
-        ├── Docker / 显式启用的 process 沙箱 / 内置 worker
+        ├── LLM 适配层（OpenAI 兼容、本机模型、流式输出）
+        ├── AST 代码定位、参数编辑、模板与统计
+        ├── Docker 沙箱 / 显式启用的本地 worker
         ├── SQLite 版本历史
         └── Matplotlib / Seaborn / Plotly 渲染
 ```
@@ -79,9 +90,18 @@ cd frontend
 npm run desktop:dev
 ```
 
-### Windows 安装包
+### Windows 桌面版
 
-先安装构建依赖：
+从 [Releases](https://github.com/WhitePepperLambSoup/quick-sciplot/releases) 下载 NSIS（`*-setup.exe`）或 MSI 安装包，目标电脑不需要安装 Python。安装包目前没有代码签名，Windows SmartScreen 可能会要求确认（点击“更多信息 → 仍要运行”）。
+
+首次启动时，设置向导提供两种代码执行方式：
+
+- **Docker 沙箱（推荐）**：安装并启动 Docker Desktop，然后在向导中点击“构建沙箱镜像”。
+- **本地 worker**：在本机独立进程中运行代码，带静态检查和资源限制，但不是操作系统级沙箱，启用前需要确认风险。
+
+配置和数据保存在 `%APPDATA%\com.quicksciplot.desktop\`（`config\.env` 与 `data\`）。已安装的应用启动时会检查 GitHub Releases 上的新版本。
+
+自行构建安装包：
 
 ```bash
 cd backend
@@ -90,38 +110,30 @@ cd ..\frontend
 npm run desktop:build
 ```
 
-NSIS 和 MSI 安装包位于 `frontend/src-tauri/target/release/bundle/`。
-正式构建包含 PyInstaller 后端 sidecar，目标电脑不需要单独安装 Python。也可以直接从 [Releases](https://github.com/WhitePepperLambSoup/quick-sciplot/releases) 下载安装包。
+NSIS 和 MSI 安装包位于 `frontend/src-tauri/target/release/bundle/`。正式构建还会生成已签名的更新包，构建前需设置 `TAURI_SIGNING_PRIVATE_KEY`（更新私钥文件内容或路径）和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，然后为发布生成 `latest.json`：
 
-桌面版的配置和数据保存在 `%APPDATA%\com.quicksciplot.desktop\` 下（`config\.env`、`data\`）。默认使用 Docker 沙箱，因此需要安装 Docker Desktop 并按下文构建沙箱镜像；如果只在可信的本机环境使用、没有 Docker，可以在 `config\.env` 中写入以下两行后重启应用，改用内置 worker（不是操作系统级沙箱）：
-
-```text
-SANDBOX_MODE=process
-ALLOW_UNSAFE_PROCESS_SANDBOX=1
+```bash
+node scripts/make-latest-json.mjs 0.3.0 "src-tauri/target/release/bundle/nsis/Quick SciPlot_0.3.0_x64-setup.exe" https://github.com/WhitePepperLambSoup/quick-sciplot/releases/download/v0.3.0/Quick-SciPlot_0.3.0_x64-setup.exe
 ```
 
-### Docker 隔离（默认）
+### Docker 沙箱
 
-启动后端前先构建沙箱镜像：
+桌面版向导可以直接构建镜像；也可以在仓库中手动构建：
 
 ```bash
 cd backend
-docker build -f Dockerfile.sandbox -t quick-sciplot-sandbox:0.2.0 .
+docker build -f Dockerfile.sandbox -t quick-sciplot-sandbox:0.3.0 .
 ```
 
-Docker 模式是默认设置，用于执行不可信的生成代码；Docker 不可用时后端会直接失败，不会静默降级。
+Docker 模式是默认设置，用于执行不可信的生成代码；Docker 不可用时后端会直接失败，不会静默降级。如果只是可信本机开发且没有 Docker，必须同时设置 `SANDBOX_MODE=process` 和 `ALLOW_UNSAFE_PROCESS_SANDBOX=1`；该模式不是操作系统级沙箱。
 
-如果只是可信本机开发且没有 Docker，必须同时设置 `SANDBOX_MODE=process` 和 `ALLOW_UNSAFE_PROCESS_SANDBOX=1`；该模式不是操作系统级沙箱。
+### 本机模型
+
+在“设置”中选择“Ollama（本机）”或“LM Studio（本机）”，或填写任意 `http://127.0.0.1:<端口>/v1` 地址，并勾选“允许连接本机模型服务”。不需要 API Key，数据不出本机。“从服务获取列表”会读取服务器上可用的模型。该开关只放行回环地址；其它内网地址仍需设置 `ALLOW_LOCAL_NETWORK_LLM=1`。
 
 ### 资源限制
 
-上传文件会流式写入磁盘，并受单文件和单批次大小限制。JSON 使用受控解析和嵌套深度限制；CSV/TSV/Excel/JSON 导入会限制行数、列数、单元格数、工作表数和 Excel ZIP 展开大小。批量导入后续文件失败时会回滚本批次已创建的数据集。绘图执行期间实时限制日志和单个产物文件大小，输出目录总量限制为 128 MiB，历史记录同时按总产物大小和单数据集版本数清理。运行时 `.env` 更新使用临时文件、`fsync` 和原子替换。
-
-## 多文件作图
-
-多个文件导入后仍然是独立数据集。用户勾选文件并点击“合并选中文件”后，程序会按行拼接、保留所有列、对缺失列填空，并增加 `source_file` 列，AI 可以据此按文件来源分组或着色。
-
-程序不会猜测 join key，也不会擅自进行关系型连接。后续可以在用户明确指定连接键和连接类型后增加 join 模式。
+上传文件会流式写入磁盘，并受单文件和单批次大小限制。JSON 使用受控解析和嵌套深度限制；CSV/TSV/Excel/JSON 导入会限制行数、列数、单元格数、工作表数和 Excel ZIP 展开大小。批量导入后续文件失败时会回滚本批次已创建的数据集。预计连接结果超过行数上限时会拒绝连接。绘图执行期间实时限制日志和单个产物文件大小，输出目录总量限制为 128 MiB，历史记录同时按总产物大小和单数据集版本数清理（收藏的版本保留）。运行时 `.env` 更新使用临时文件、`fsync` 和原子替换。
 
 ## 评测
 
@@ -142,16 +154,18 @@ python evaluate.py --model-config model_matrix.example.json \
 
 ## 安全说明
 
-程序会执行 LLM 生成的 Python 代码。本项目定位是本机单用户工具，不是多租户服务。Docker 模式是默认安全边界：禁用网络、使用只读根文件系统、丢弃 capabilities、以非 root 用户运行并限制资源。process 模式只有静态检查、独立进程和超时限制，不是操作系统级沙箱，只能在可信本机环境显式启用。
+程序会执行 LLM 生成的 Python 代码。本项目定位是本机单用户工具，不是多租户服务。Docker 模式是默认安全边界：禁用网络、使用只读根文件系统、丢弃 capabilities、以非 root 用户运行并限制资源。本地 worker 只有静态检查、独立进程和超时限制，不是操作系统级沙箱；只有桌面版可以在界面中启用，并且需要明确确认风险。
 
 后端只允许绑定回环地址，并通过会话 token 认证：浏览器使用 HttpOnly cookie，桌面版由 Tauri 壳把 token 交给前端、以请求头发送。为防御 DNS 重绑定，服务只接受 Host 为 `localhost`、`127.0.0.1` 或 `::1` 的请求（可用 `ALLOWED_HOSTS` 调整）。
+
+“AI 视觉体检”会把渲染出的图片发送给所配置的模型服务，“排版体检”不会。桌面版更新包在安装前会用 `tauri.conf.json` 中的公钥校验签名。
 
 不要把当前本地 FastAPI 服务暴露到公网。详见 [SECURITY.md](SECURITY.md)。
 
 ## 目录结构
 
-- `backend/`：FastAPI 服务、数据处理、LLM、沙箱、测试和 sidecar 构建脚本。
-- `frontend/`：React + Vite WebUI，以及 `src-tauri/` 下的 Tauri 2 桌面壳。
+- `backend/`：FastAPI 服务、数据处理、LLM、沙箱、模板、测试和 sidecar 构建脚本。
+- `frontend/`：React + Vite WebUI，`src-tauri/` 下的 Tauri 2 桌面壳，以及 `scripts/` 下的发布辅助脚本。
 - `docs/`：调研和评测文档。
 - `presets/`、`references/`、`skills/`：可选的第三方本地仓库，已加入 Git 忽略。
 

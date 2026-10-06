@@ -2,6 +2,43 @@
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-10-07
+
+### Added
+
+- First-run setup wizard: checks Docker, builds the sandbox image from inside the app with a live log, or enables the bundled local worker after an explicit risk confirmation (desktop app only).
+- Streaming generation: model output appears as it is written, with the current stage (writing, rendering, auto-repairing) and a **Cancel** button that also stops the running renderer.
+- Data workbench: paginated table preview; filter, wide-to-long, select, sort and drop-missing steps; key-based joins (inner/left/right/outer) with a guard against many-to-many blow-ups. Results are saved as new datasets.
+- Template gallery that needs no model: volcano plot, Kaplan-Meier survival with log-rank test, PCA, clustered heatmap, dose-response (4PL, EC50), correlation triangle, and bar + points with SD/SEM.
+- Statistics: paired t-test, Wilcoxon signed-rank, Tukey HSD post hoc, a "no correction" option, pairing by subject column, all group values (not just the five most frequent), and a regression tab that draws the fitted curve with its equation and R².
+- Code editor (CodeMirror) with syntax highlighting, undo, Ctrl+Enter to run and the failing line highlighted; error lines are mapped back from the runner script to your code.
+- Revision names and stars (starred revisions are never pruned), a starred-only filter, and side-by-side comparison with thumbnails and a code diff.
+- Batch plotting across datasets with a zip download of all figures.
+- Reproducible exports: a standalone Python script and a project bundle (data, script, figures, metadata).
+- Local models: Ollama / LM Studio presets, a loopback-only permission switch, keyless requests, and fetching the model list from the provider.
+- AI vision review of the rendered figure, merged with the rule-based critique.
+- One-click journal width fit (single or double column) from the compliance dialog; x-axis limit handles in interactive correction; interactive correction for Plotly figures; all seven composer layouts in the UI.
+- Drag-and-drop import, Ctrl+O, Esc to close dialogs, and honest start-up status ("starting local service…").
+- Desktop auto-update from signed GitHub releases.
+
+### Changed
+
+- The desktop backend ships as a PyInstaller one-dir build: it is ready in about 3 seconds instead of 30+.
+- The Docker sandbox image includes a CJK font and is tagged `quick-sciplot-sandbox:0.3.0`; rebuild it (the wizard can do this).
+- Model settings use provider presets; the execution sandbox is configured in the setup wizard.
+
+### Fixed
+
+- Chinese text rendered as boxes when the plotting code called `sns.set_style()` or similar after the fonts were set.
+- The mock scatter example always failed and was replaced by the auto-repair result.
+- The statistics dialog ignored the selected style preset.
+
+### Known Limitations
+
+- Installers are not code-signed, so Windows SmartScreen may ask for confirmation.
+- The Docker execution path is still not covered by automated tests against a running Docker daemon.
+- This is a single-user local tool: there are no per-user accounts or object-level permissions, so do not expose the service to other users or networks.
+
 ## [0.2.0] - 2026-10-05
 
 ### Added

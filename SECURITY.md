@@ -13,9 +13,15 @@ Quick SciPlot 会执行 LLM 生成的 Python 代码。当前执行器提供：
 - 解析/绘图并发上限与 SQLite 历史产物配额清理
 - Host 请求头白名单（`ALLOWED_HOSTS`）以防御 DNS 重绑定；桌面版通过 Tauri 命令取得会话 token，以请求头而非跨站 cookie 认证
 
-如果构建并启用 Docker 模式，执行器还会使用无网络、只读根文件系统、非 root 用户、capability drop、CPU/内存/PID 限制。Docker 模式需要用户自行构建并维护 `backend/Dockerfile.sandbox` 镜像。
+如果构建并启用 Docker 模式，执行器还会使用无网络、只读根文件系统、非 root 用户、capability drop、CPU/内存/PID 限制。镜像可在桌面版设置向导中构建，也可由用户按 `backend/Dockerfile.sandbox` 自行构建。超时、超限或用户取消时会删除对应容器。
 
-本地 process 模式不是操作系统级沙箱；Docker 模式的隔离强度依赖 Docker Desktop/Engine 配置。用户应只在本机或受信任网络中运行，不应把当前 FastAPI 服务直接暴露到公网，也不应把不可信用户的数据提交给同一个服务实例。
+本地 process 模式（本地 worker）不是操作系统级沙箱。它只能通过环境变量启用，或在桌面版向导中由用户勾选风险确认后启用；浏览器访问的服务端不接受通过 API 启用。Docker 模式的隔离强度依赖 Docker Desktop/Engine 配置。
+
+其它与数据外发相关的行为：
+
+- 默认只把数据结构和数值统计发送给模型；“AI 视觉体检”会把渲染出的图片发送给所配置的模型服务。
+- 本机模型开关（`ALLOW_LOOPBACK_LLM`）只放行回环地址，且不允许指向本服务自身端口；其它内网地址仍需 `ALLOW_LOCAL_NETWORK_LLM=1`。
+- 桌面版自动更新只安装用 `tauri.conf.json` 中公钥验证过签名的安装包。用户应只在本机或受信任网络中运行，不应把当前 FastAPI 服务直接暴露到公网，也不应把不可信用户的数据提交给同一个服务实例。
 
 项目仍是本机单用户服务：SQLite 记录没有用户/租户 ACL，实例 token 不是多用户身份系统。共享部署前必须增加用户认证、对象级授权、审计和隔离；当前版本不支持把本地端口暴露给不可信用户。
 

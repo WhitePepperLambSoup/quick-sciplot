@@ -129,7 +129,7 @@ def generate_mimic_code(
             raw = llm._call_code(messages)
             return llm._extract_code(raw)
         except llm.LLMError:
-            if not settings.llm_api_key:
+            if not llm.is_configured():
                 raise
             # 当使用的 LLM 模型不支持视觉多模态输入时，平滑降级为纯文本提示词
             pass

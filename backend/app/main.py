@@ -2,16 +2,19 @@
 
 import asyncio
 import hmac
+import json
+import queue
 import shutil
 import subprocess
 import tempfile
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
-from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import (
@@ -19,19 +22,23 @@ from . import (
     compliance_checker,
     config as app_config,
     data_loader,
+    data_transform,
     database,
+    exporter,
     figure_composer,
     figure_mimic,
     llm,
+    plot_templates,
     preset_registry,
     sandbox,
     stats_annotator,
+    system,
     visual_critic,
     visual_manipulator,
 )
 from .config import settings
 
-app = FastAPI(title="Quick SciPlot", version="0.2.0", description="LLM 驱动的快捷科研画图")
+app = FastAPI(title="Quick SciPlot", version="0.3.0", description="LLM 驱动的快捷科研画图")
 
 SAFE_ORIGINS = [
     "http://localhost:5173",
@@ -132,6 +139,7 @@ class LLMConfigRequest(BaseModel):
     auto_repair_attempts: int | None = None
     sandbox_mode: str | None = Field(None, max_length=64)
     send_data_values: bool | None = None
+    allow_loopback_llm: bool | None = None
 
 
 class CombineRequest(BaseModel):
@@ -147,6 +155,7 @@ class StatsAnnotationRequest(BaseModel):
     pairs: list[list[str]] = Field(..., max_length=50)
     test_type: str = Field("auto", max_length=64)
     correction_method: str = Field("bonferroni", max_length=32)
+    pair_col: str | None = Field(None, max_length=128)
     preset: str | None = Field(None, max_length=128)
 
 
@@ -166,6 +175,7 @@ class MimicRequest(BaseModel):
 
 class CritiqueRequest(BaseModel):
     revision_id: str = Field(..., max_length=128)
+    use_ai: bool = False
 
 
 class InteractiveAdjustRequest(BaseModel):
@@ -415,8 +425,11 @@ def rotate_token(response: Response, _token: str = Depends(verify_session_token)
 @app.put("/api/config/llm", summary="更新本地 LLM 配置")
 def update_llm_config(req: LLMConfigRequest, _token: str = Depends(verify_session_token)):
     if req.base_url is not None:
+        options = app_config.llm_url_options()
+        if req.allow_loopback_llm is not None:
+            options["allow_loopback"] = req.allow_loopback_llm
         try:
-            app_config.validate_safe_llm_url(req.base_url, allow_local_network=settings.allow_local_network_llm)
+            app_config.validate_safe_llm_url(req.base_url, **options)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     for value in (req.api_key, req.base_url, req.model):
@@ -439,6 +452,7 @@ def update_llm_config(req: LLMConfigRequest, _token: str = Depends(verify_sessio
             auto_repair_attempts=req.auto_repair_attempts,
             sandbox_mode=req.sandbox_mode,
             send_data_values=req.send_data_values,
+            allow_loopback_llm=req.allow_loopback_llm,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -505,8 +519,10 @@ def annotate_stats(req: StatsAnnotationRequest, _token: str = Depends(verify_ses
     converted_pairs = [(pair[0], pair[1]) for pair in req.pairs if len(pair) >= 2]
     if not converted_pairs:
         raise HTTPException(status_code=400, detail="至少需要提供一组对比分组")
-    if req.correction_method not in {"bonferroni", "fdr_bh"}:
-        raise HTTPException(status_code=400, detail="多重比较校正方式只能是 bonferroni 或 fdr_bh")
+    if req.correction_method not in stats_annotator.CORRECTION_METHODS:
+        raise HTTPException(status_code=400, detail="多重比较校正方式只能是 bonferroni、fdr_bh 或 none")
+    if req.test_type not in stats_annotator.TEST_TYPES:
+        raise HTTPException(status_code=400, detail=f"不支持的检验方法: {req.test_type}")
     try:
         annotated_code, results = stats_annotator.inject_stat_brackets(
             req.code,
@@ -516,6 +532,7 @@ def annotate_stats(req: StatsAnnotationRequest, _token: str = Depends(verify_ses
             converted_pairs,
             req.test_type,
             correction_method=req.correction_method,
+            pair_col=req.pair_col,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"统计标尺生成失败: {exc}") from exc
@@ -573,7 +590,10 @@ def critique_plot(req: CritiqueRequest, _token: str = Depends(verify_session_tok
         raise HTTPException(status_code=404, detail="未找到有效的绘图版本进行质检")
     out_dir = _revision_output_dir(revision)
     png_path = out_dir / "out.png"
-    return visual_critic.critique_figure_image(png_path, revision["code"])
+    report = visual_critic.critique_figure_image(png_path, revision["code"])
+    if req.use_ai:
+        report["ai"] = visual_critic.ai_critique(png_path, revision["code"])
+    return report
 
 
 @app.get("/api/plots/revisions/{revision_id}/compliance/{journal}", summary="顶刊投稿合规检查：Nature/IEEE/Cell 尺寸与矢量检查")
@@ -611,13 +631,28 @@ def get_revision_detail(revision_id: str, _token: str = Depends(verify_session_t
 
 @app.get("/api/plots/revisions/{revision_id}/export/{format_name}", summary="导出绘图文件")
 def export_plot_revision(revision_id: str, format_name: str, _token: str = Depends(verify_session_token)):
-    if format_name not in {"png", "svg", "pdf", "eps", "plotly"}:
-        raise HTTPException(status_code=400, detail="只支持 png、svg、pdf、eps、plotly")
+    if format_name not in {"png", "svg", "pdf", "eps", "plotly", "script", "bundle"}:
+        raise HTTPException(status_code=400, detail="只支持 png、svg、pdf、eps、plotly、script、bundle")
     revision = database.get_revision(revision_id)
     if revision is None or not revision["success"]:
         raise HTTPException(status_code=404, detail="可导出的绘图版本不存在")
 
     output_dir = _revision_output_dir(revision)
+    stem = f"quick-sciplot-{revision_id[:8]}"
+    if format_name == "script":
+        return Response(
+            exporter.standalone_script(revision),
+            media_type="text/x-python; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.py"'},
+        )
+    if format_name == "bundle":
+        ds = _get_dataset(revision["dataset_id"])
+        payload = exporter.project_bundle(revision, Path(ds["path"]), ds.get("name") or "data.csv", output_dir)
+        return Response(
+            payload,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{stem}-project.zip"'},
+        )
 
     extensions = {"png": "png", "svg": "svg", "pdf": "pdf", "eps": "eps", "plotly": "plotly.json"}
     file_path = (output_dir / f"out.{extensions[format_name]}").resolve()
@@ -660,7 +695,24 @@ def _revision_output_dir(revision: dict) -> Path:
     return output_dir
 
 
-def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", operation: str = "run") -> dict:
+class PlotCancelled(Exception):
+    """The client cancelled a streaming plot request."""
+
+
+# Operations whose code comes from the user or a deterministic transform: a
+# failure is reported as-is instead of being sent to the model for repair.
+NO_REPAIR_OPERATIONS = {"run", "parameter", "compose", "stats", "regression", "fit-journal", "template", "batch"}
+
+
+def _execute_and_decorate(
+    code: str,
+    ds: dict,
+    preset_id: str = "default",
+    operation: str = "run",
+    *,
+    cancel_event: threading.Event | None = None,
+    on_stage: Callable[[str], None] | None = None,
+) -> dict:
     if not _PLOT_SEMAPHORE.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="绘图执行资源繁忙，请稍后重试")
 
@@ -671,13 +723,16 @@ def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", opera
     repair_attempts = 0
     repair_error = ""
     revision_id: str | None = None
+    cancel_kwargs = sandbox._cancel_kwargs(cancel_event)
     try:
         try:
-            result = sandbox.run_plot_code(code, Path(ds["path"]), out_dir, preset_id)
+            result = sandbox.run_plot_code(code, Path(ds["path"]), out_dir, preset_id, **cancel_kwargs)
+        except sandbox.SandboxCancelledError as exc:
+            raise PlotCancelled() from exc
         except sandbox.SandboxUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except sandbox.SandboxSyntaxError as exc:
-            if operation in ("run", "parameter") or settings.auto_repair_attempts <= 0:
+            if operation in NO_REPAIR_OPERATIONS or settings.auto_repair_attempts <= 0:
                 raise HTTPException(status_code=400, detail=f"代码语法错误: {exc}") from exc
             result = {
                 "success": False,
@@ -686,12 +741,18 @@ def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", opera
                 "stderr": str(exc),
                 "formats": [],
             }
+            if getattr(exc, "lineno", None):
+                result["error_line"] = exc.lineno
         except sandbox.SandboxError as exc:
             raise HTTPException(status_code=400, detail=f"代码未通过安全检查: {exc}") from exc
         except subprocess.TimeoutExpired as exc:
             raise HTTPException(status_code=408, detail=f"执行超时（>{settings.sandbox_timeout}s）") from exc
-        if not result["success"] and operation not in ("run", "parameter", "compose", "stats"):
+        if not result["success"] and operation not in NO_REPAIR_OPERATIONS:
             while repair_attempts < max(0, settings.auto_repair_attempts):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise PlotCancelled()
+                if on_stage is not None:
+                    on_stage("repair")
                 try:
                     code = llm.repair_plot_code(code, result.get("stderr", ""), ds["summary"], preset_id)
                 except llm.LLMError as exc:
@@ -699,7 +760,9 @@ def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", opera
                     break
                 repair_attempts += 1
                 try:
-                    result = sandbox.run_plot_code(code, Path(ds["path"]), out_dir, preset_id)
+                    result = sandbox.run_plot_code(code, Path(ds["path"]), out_dir, preset_id, **cancel_kwargs)
+                except sandbox.SandboxCancelledError as exc:
+                    raise PlotCancelled() from exc
                 except sandbox.SandboxError as exc:
                     result = {
                         "success": False,
@@ -753,3 +816,394 @@ def _execute_and_decorate(code: str, ds: dict, preset_id: str = "default", opera
             shutil.rmtree(out_dir, ignore_errors=True)
         database.release_output_inflight(out_dir)
         _PLOT_SEMAPHORE.release()
+
+
+# ---------------------------------------------------------------- system setup
+
+
+class SandboxSetupRequest(BaseModel):
+    mode: str = Field(..., max_length=16)
+    acknowledge_risk: bool = False
+
+
+@app.get("/api/system/status", summary="运行环境与沙箱就绪状态（首次启动向导）")
+def get_system_status(_token: str = Depends(verify_session_token)):
+    return system.system_status()
+
+
+@app.post("/api/system/sandbox", summary="切换代码执行沙箱")
+def configure_system_sandbox(req: SandboxSetupRequest, _token: str = Depends(verify_session_token)):
+    try:
+        return system.configure_sandbox(req.mode, acknowledge_risk=req.acknowledge_risk)
+    except system.SetupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"保存本地配置失败: {exc}") from exc
+
+
+@app.post("/api/system/docker/build", summary="在后台构建 Docker 沙箱镜像")
+def build_docker_image(_token: str = Depends(verify_session_token)):
+    if system.build_files_dir() is None:
+        raise HTTPException(status_code=404, detail="找不到沙箱镜像的 Dockerfile")
+    started = system.IMAGE_BUILD.start()
+    return {"started": started, "image_build": system.IMAGE_BUILD.snapshot()}
+
+
+@app.get("/api/config/models", summary="列出当前模型服务提供的模型")
+def list_llm_models(_token: str = Depends(verify_session_token)):
+    try:
+        return {"models": llm.list_models()}
+    except llm.LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+# -------------------------------------------------------------- data workbench
+
+
+class TransformRequest(BaseModel):
+    operations: list[dict] = Field(..., max_length=data_transform.MAX_OPERATIONS)
+    name: str | None = Field(None, max_length=256)
+
+
+class JoinRequest(BaseModel):
+    left_id: str = Field(..., max_length=128)
+    right_id: str = Field(..., max_length=128)
+    left_on: list[str] = Field(..., max_length=10)
+    right_on: list[str] = Field(..., max_length=10)
+    how: str = Field("inner", max_length=16)
+    name: str | None = Field(None, max_length=256)
+
+
+def _data_error(exc: data_loader.DataError) -> HTTPException:
+    if isinstance(exc, data_loader.DataBusyError):
+        return HTTPException(status_code=429, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+def _store_derived_dataset(frame, name: str) -> dict:
+    try:
+        created = data_loader.create_dataset(settings.data_dir, frame, name)
+    except data_loader.DataError as exc:
+        raise _data_error(exc) from exc
+    DATASETS[created["id"]] = created
+    database.save_dataset(created)
+    return _public_dataset(created)
+
+
+@app.get("/api/datasets/{dataset_id}/preview", summary="分页预览数据集原始行")
+def preview_dataset(
+    dataset_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=data_transform.MAX_PREVIEW_ROWS),
+    _token: str = Depends(verify_session_token),
+):
+    ds = _get_dataset(dataset_id)
+    try:
+        return data_transform.preview(ds["path"], offset, limit)
+    except data_loader.DataError as exc:
+        raise _data_error(exc) from exc
+
+
+@app.get("/api/datasets/{dataset_id}/values", summary="某一列的全部取值（按频次排序）")
+def dataset_column_values(
+    dataset_id: str,
+    column: str = Query(..., max_length=256),
+    limit: int = Query(500, ge=1, le=data_transform.MAX_COLUMN_VALUES),
+    _token: str = Depends(verify_session_token),
+):
+    ds = _get_dataset(dataset_id)
+    try:
+        return data_transform.column_values(ds["path"], column, limit)
+    except data_loader.DataError as exc:
+        raise _data_error(exc) from exc
+
+
+@app.post("/api/datasets/{dataset_id}/transform", summary="筛选/宽转长/选列等处理后另存为新数据集")
+def transform_dataset(dataset_id: str, req: TransformRequest, _token: str = Depends(verify_session_token)):
+    ds = _get_dataset(dataset_id)
+    try:
+        frame = data_transform.transform(ds["path"], req.operations)
+    except data_loader.DataError as exc:
+        raise _data_error(exc) from exc
+    name = (req.name or "").strip() or f"{ds.get('name') or '数据集'}（处理后）"
+    return _store_derived_dataset(frame, name)
+
+
+@app.post("/api/datasets/join", summary="按指定键连接两个数据集")
+def join_datasets(req: JoinRequest, _token: str = Depends(verify_session_token)):
+    left = _get_dataset(req.left_id)
+    right = _get_dataset(req.right_id)
+    try:
+        frame = data_transform.join(left["path"], right["path"], req.left_on, req.right_on, req.how)
+    except data_loader.DataError as exc:
+        raise _data_error(exc) from exc
+    name = (req.name or "").strip() or f"{left.get('name') or 'left'} ⋈ {right.get('name') or 'right'}"
+    return _store_derived_dataset(frame, name)
+
+
+# ------------------------------------------------------------ figure helpers
+
+
+class TemplateRequest(BaseModel):
+    dataset_id: str = Field(..., max_length=128)
+    template_id: str = Field(..., max_length=64)
+    params: dict[str, object] = Field(default_factory=dict)
+    preset: str | None = Field(None, max_length=128)
+
+
+class RegressionRequest(BaseModel):
+    dataset_id: str = Field(..., max_length=128)
+    code: str = Field(..., max_length=100000)
+    x_col: str = Field(..., max_length=256)
+    y_col: str = Field(..., max_length=256)
+    degree: int = 1
+    preset: str | None = Field(None, max_length=128)
+
+
+class FitJournalRequest(BaseModel):
+    dataset_id: str = Field(..., max_length=128)
+    code: str = Field(..., max_length=100000)
+    journal: str = Field(..., max_length=32)
+    column: str = Field("single", max_length=16)
+    preset: str | None = Field(None, max_length=128)
+
+
+@app.get("/api/templates", summary="内置科研图模板列表")
+def get_templates():
+    return {"templates": plot_templates.list_templates()}
+
+
+@app.post("/api/plots/template", summary="按模板生成并渲染科研图")
+def plot_from_template(req: TemplateRequest, _token: str = Depends(verify_session_token)):
+    ds = _get_dataset(req.dataset_id)
+    preset = _normalize_preset(req.preset)
+    try:
+        code = plot_templates.build_code(req.template_id, req.params, ds["summary"])
+    except plot_templates.TemplateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _execute_and_decorate(code, ds, preset, "template")
+
+
+@app.post("/api/plots/regression", summary="拟合回归曲线并在图上标注方程与 R²")
+def plot_regression(req: RegressionRequest, _token: str = Depends(verify_session_token)):
+    ds = _get_dataset(req.dataset_id)
+    preset = _normalize_preset(req.preset)
+    if visual_manipulator.is_plotly_code(req.code):
+        raise HTTPException(status_code=400, detail="回归拟合标注目前只支持 Matplotlib 图")
+    try:
+        df = data_loader.load_dataframe(ds["path"])
+        for column in (req.x_col, req.y_col):
+            if column not in df.columns:
+                raise ValueError(f"列不存在: {column}")
+        fit = stats_annotator.fit_regression(df, req.x_col, req.y_col, req.degree)
+    except data_loader.DataError as exc:
+        raise _data_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    decorated = _execute_and_decorate(stats_annotator.inject_regression(req.code, fit), ds, preset, "regression")
+    decorated["regression"] = fit
+    return decorated
+
+
+@app.post("/api/plots/fit-journal", summary="按期刊单栏/双栏宽度调整图像尺寸")
+def plot_fit_journal(req: FitJournalRequest, _token: str = Depends(verify_session_token)):
+    ds = _get_dataset(req.dataset_id)
+    preset = _normalize_preset(req.preset)
+    try:
+        code, width = compliance_checker.fit_figure_code(req.code, req.journal, req.column)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    decorated = _execute_and_decorate(code, ds, preset, "fit-journal")
+    decorated["width_inches"] = width
+    return decorated
+
+
+# ------------------------------------------------------------ revision extras
+
+
+class RevisionUpdateRequest(BaseModel):
+    label: str | None = Field(None, max_length=200)
+    starred: bool | None = None
+
+
+@app.patch("/api/plots/history/{revision_id}", summary="为版本命名或收藏（收藏的版本不会被自动清理）")
+def update_revision(revision_id: str, req: RevisionUpdateRequest, _token: str = Depends(verify_session_token)):
+    updated = database.update_revision(revision_id, label=req.label, starred=req.starred)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="绘图版本不存在")
+    return updated
+
+
+@app.get("/api/plots/revisions/{revision_id}/thumbnail", summary="版本缩略图")
+def revision_thumbnail(revision_id: str, _token: str = Depends(verify_session_token)):
+    revision = database.get_revision(revision_id)
+    if revision is None or not revision["success"]:
+        raise HTTPException(status_code=404, detail="绘图版本不存在")
+    image = exporter.thumbnail(_revision_output_dir(revision))
+    if image is None:
+        raise HTTPException(status_code=404, detail="该版本没有位图预览")
+    return Response(image, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+
+class BatchRequest(BaseModel):
+    code: str = Field(..., max_length=100000)
+    dataset_ids: list[str] = Field(..., max_length=20)
+    preset: str | None = Field(None, max_length=128)
+
+
+class ExportZipRequest(BaseModel):
+    revision_ids: list[str] = Field(..., max_length=50)
+    format: str = Field("png", max_length=16)
+
+
+@app.post("/api/plots/batch", summary="把同一段绘图代码批量应用到多个数据集")
+def batch_plot(req: BatchRequest, _token: str = Depends(verify_session_token)):
+    preset = _normalize_preset(req.preset)
+    dataset_ids = list(dict.fromkeys(req.dataset_ids))
+    if not dataset_ids:
+        raise HTTPException(status_code=400, detail="至少选择一个数据集")
+    items = []
+    for dataset_id in dataset_ids:
+        item: dict = {"dataset_id": dataset_id}
+        try:
+            ds = _get_dataset(dataset_id)
+            item["name"] = ds.get("name", "")
+            decorated = _execute_and_decorate(req.code, ds, preset, "batch")
+            run = decorated["run"]
+            item.update(
+                {
+                    "revision_id": decorated["revision_id"],
+                    "success": run["success"],
+                    "stderr": run.get("stderr", "")[-1500:],
+                    "export_formats": decorated["export_formats"],
+                }
+            )
+        except HTTPException as exc:
+            item.update({"success": False, "error": str(exc.detail)})
+        items.append(item)
+    return {"items": items, "succeeded": sum(1 for item in items if item.get("success"))}
+
+
+@app.post("/api/plots/export-zip", summary="把多个版本的同一格式打包下载")
+def export_revisions_zip(req: ExportZipRequest, _token: str = Depends(verify_session_token)):
+    entries = []
+    for revision_id in dict.fromkeys(req.revision_ids):
+        revision = database.get_revision(revision_id)
+        if revision is None or not revision["success"]:
+            continue
+        dataset = database.get_dataset(revision["dataset_id"])
+        stem = (dataset or {}).get("name") or revision_id[:8]
+        entries.append((Path(stem).stem + f"-{revision_id[:6]}", _revision_output_dir(revision)))
+    if not entries:
+        raise HTTPException(status_code=404, detail="没有可导出的版本")
+    try:
+        payload = exporter.revisions_zip(entries, req.format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="quick-sciplot-{req.format}.zip"'},
+    )
+
+
+# ------------------------------------------------------- streaming generation
+
+
+_STREAM_DONE = object()
+_STREAM_PING = object()
+
+
+def _stream_plot(messages: list[dict], ds: dict, preset: str, operation: str, finalize=None) -> StreamingResponse:
+    """Stream model tokens and stage changes as NDJSON, then the final plot result.
+
+    Closing the connection cancels the model request and the running renderer.
+    """
+    events: queue.Queue = queue.Queue()
+    cancel = threading.Event()
+
+    def emit(event) -> None:
+        events.put(event)
+
+    def worker() -> None:
+        try:
+            emit({"type": "stage", "stage": "llm"})
+            pieces: list[str] = []
+            for piece in llm.stream_chat(messages, cancel_event=cancel):
+                pieces.append(piece)
+                emit({"type": "token", "text": piece})
+            if cancel.is_set():
+                raise PlotCancelled()
+            text = "".join(pieces)
+            if not text.strip():
+                # Some reasoning models stream only hidden reasoning; ask once more without streaming.
+                text = llm._call_code(messages)
+            code = llm._extract_code(text)
+            if finalize is not None:
+                code = finalize(code)
+            if not code.strip():
+                raise llm.LLMError("LLM 返回了空代码")
+            emit({"type": "stage", "stage": "render"})
+            result = _execute_and_decorate(
+                code,
+                ds,
+                preset,
+                operation,
+                cancel_event=cancel,
+                on_stage=lambda stage: emit({"type": "stage", "stage": stage}),
+            )
+            emit({"type": "result", "data": result})
+        except PlotCancelled:
+            emit({"type": "cancelled"})
+        except HTTPException as exc:
+            emit({"type": "error", "status": exc.status_code, "detail": exc.detail})
+        except llm.LLMError as exc:
+            emit({"type": "error", "status": 502, "detail": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - report instead of dropping the stream
+            emit({"type": "error", "status": 500, "detail": f"内部错误: {exc}"})
+        finally:
+            emit(_STREAM_DONE)
+
+    threading.Thread(target=worker, name=f"stream-{operation}", daemon=True).start()
+
+    def next_event():
+        try:
+            return events.get(timeout=1.0)
+        except queue.Empty:
+            return _STREAM_PING
+
+    async def body():
+        try:
+            while True:
+                event = await asyncio.to_thread(next_event)
+                if event is _STREAM_DONE:
+                    return
+                if event is _STREAM_PING:
+                    yield b'{"type":"ping"}\n'
+                    continue
+                yield (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+        finally:
+            cancel.set()
+
+    return StreamingResponse(
+        body(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/plots/generate/stream", summary="流式生成绘图代码并渲染（可取消）")
+def generate_plot_stream(req: GenerateRequest, _token: str = Depends(verify_session_token)):
+    ds = _get_dataset(req.dataset_id)
+    preset = _normalize_preset(req.preset)
+    return _stream_plot(llm.generate_messages(req.instruction, ds["summary"], preset), ds, preset, "generate")
+
+
+@app.post("/api/plots/edit/stream", summary="流式修改绘图代码并渲染（可取消）")
+def edit_plot_stream(req: EditRequest, _token: str = Depends(verify_session_token)):
+    ds = _get_dataset(req.dataset_id)
+    preset = _normalize_preset(req.preset)
+    messages = llm.edit_messages(req.code, req.instruction, ds["summary"], preset, history=req.history)
+    return _stream_plot(messages, ds, preset, "edit", finalize=llm.finalize_edited_code)

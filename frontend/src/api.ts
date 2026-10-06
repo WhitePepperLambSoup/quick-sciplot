@@ -1,4 +1,21 @@
-import type { CodeParameter, ConnectionResult, DatasetInfo, LLMConfig, PlotResult, Preset, RevisionSummary } from "./types";
+import type {
+  BatchItem,
+  CodeParameter,
+  ColumnValues,
+  ConnectionResult,
+  CritiqueReport,
+  DatasetInfo,
+  DatasetPreview,
+  LLMConfig,
+  PlotResult,
+  Preset,
+  RevisionDetail,
+  RevisionSummary,
+  StreamEvent,
+  SystemStatus,
+  TemplateInfo,
+  TransformOperation,
+} from "./types";
 
 export const API_BASE = import.meta.env.DEV ? "/api" : "http://127.0.0.1:8000/api";
 
@@ -201,8 +218,9 @@ export async function updateLLMConfig(input: {
   model: string;
   mock: boolean;
   auto_repair_attempts: number;
-  sandbox_mode: "process" | "docker";
+  sandbox_mode?: "process" | "docker";
   send_data_values: boolean;
+  allow_loopback_llm?: boolean;
 }): Promise<LLMConfig> {
   return request<LLMConfig>("/config/llm", {
     method: "PUT",
@@ -222,6 +240,8 @@ export async function annotateStats(input: {
   val_col: string;
   pairs: string[][];
   test_type?: string;
+  correction_method?: string;
+  pair_col?: string;
   preset?: string;
 }): Promise<PlotResult & { stats_results?: unknown[] }> {
   return request("/plots/stats", {
@@ -257,18 +277,11 @@ export async function mimicPlot(input: {
   });
 }
 
-export async function critiquePlot(revisionId: string): Promise<{
-  score: number;
-  suggestions: string[];
-  has_overlap: boolean;
-  legend_ok: boolean;
-  dpi_ok: boolean;
-  repair_prompt: string;
-}> {
+export async function critiquePlot(revisionId: string, useAi = false): Promise<CritiqueReport> {
   return request("/plots/critique", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ revision_id: revisionId }),
+    body: JSON.stringify({ revision_id: revisionId, use_ai: useAi }),
   });
 }
 
@@ -281,14 +294,7 @@ export async function checkCompliance(revisionId: string, journal: string = "nat
   return request(`/plots/revisions/${revisionId}/compliance/${journal}`);
 }
 
-export async function getRevisionDetail(revisionId: string): Promise<{
-  id: string;
-  dataset_id: string;
-  code: string;
-  preset: string;
-  operation: string;
-  created_at: string;
-}> {
+export async function getRevisionDetail(revisionId: string): Promise<RevisionDetail> {
   return request(`/plots/history/${revisionId}/detail`);
 }
 
@@ -299,9 +305,170 @@ export async function interactiveAdjustPlot(input: {
   params: Record<string, unknown>;
   preset?: string;
 }): Promise<PlotResult> {
-  return request("/plots/interactive-adjust", {
+  return postJson("/plots/interactive-adjust", input);
+}
+
+function postJson<T>(path: string, body: unknown, method = "POST"): Promise<T> {
+  return request<T>(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// ------------------------------------------------------------- system setup
+
+export function getSystemStatus(): Promise<SystemStatus> {
+  return request<SystemStatus>("/system/status");
+}
+
+export function setSandboxMode(mode: "process" | "docker", acknowledgeRisk = false): Promise<SystemStatus> {
+  return postJson<SystemStatus>("/system/sandbox", { mode, acknowledge_risk: acknowledgeRisk });
+}
+
+export function startDockerImageBuild(): Promise<{ started: boolean }> {
+  return postJson("/system/docker/build", {});
+}
+
+export async function listModels(): Promise<string[]> {
+  const data = await request<{ models: string[] }>("/config/models");
+  return data.models;
+}
+
+// ----------------------------------------------------------- data workbench
+
+export function previewDataset(datasetId: string, offset = 0, limit = 100): Promise<DatasetPreview> {
+  return request<DatasetPreview>(`/datasets/${datasetId}/preview?offset=${offset}&limit=${limit}`);
+}
+
+export function columnValues(datasetId: string, column: string, limit = 500): Promise<ColumnValues> {
+  return request<ColumnValues>(`/datasets/${datasetId}/values?column=${encodeURIComponent(column)}&limit=${limit}`);
+}
+
+export function transformDataset(datasetId: string, operations: TransformOperation[], name?: string): Promise<DatasetInfo> {
+  return postJson<DatasetInfo>(`/datasets/${datasetId}/transform`, { operations, name });
+}
+
+export function joinDatasets(input: {
+  left_id: string;
+  right_id: string;
+  left_on: string[];
+  right_on: string[];
+  how: string;
+  name?: string;
+}): Promise<DatasetInfo> {
+  return postJson<DatasetInfo>("/datasets/join", input);
+}
+
+// ------------------------------------------------------------ figure helpers
+
+export async function listTemplates(): Promise<TemplateInfo[]> {
+  const data = await request<{ templates: TemplateInfo[] }>("/templates");
+  return data.templates;
+}
+
+export function plotTemplate(input: {
+  dataset_id: string;
+  template_id: string;
+  params: Record<string, unknown>;
+  preset?: string;
+}): Promise<PlotResult> {
+  return postJson<PlotResult>("/plots/template", input);
+}
+
+export function regressionPlot(input: {
+  dataset_id: string;
+  code: string;
+  x_col: string;
+  y_col: string;
+  degree: number;
+  preset?: string;
+}): Promise<PlotResult> {
+  return postJson<PlotResult>("/plots/regression", input);
+}
+
+export function fitJournal(input: {
+  dataset_id: string;
+  code: string;
+  journal: string;
+  column: "single" | "double";
+  preset?: string;
+}): Promise<PlotResult> {
+  return postJson<PlotResult>("/plots/fit-journal", input);
+}
+
+export function updateRevision(revisionId: string, patch: { label?: string; starred?: boolean }): Promise<RevisionSummary> {
+  return postJson<RevisionSummary>(`/plots/history/${revisionId}`, patch, "PATCH");
+}
+
+export async function fetchThumbnail(revisionId: string): Promise<string> {
+  const response = await authorizedFetch(`${API_BASE}/plots/revisions/${revisionId}/thumbnail`);
+  if (!response.ok) throw new Error(`缩略图加载失败 (${response.status})`);
+  return URL.createObjectURL(await response.blob());
+}
+
+export function batchPlot(input: { code: string; dataset_ids: string[]; preset?: string }): Promise<{
+  items: BatchItem[];
+  succeeded: number;
+}> {
+  return postJson("/plots/batch", input);
+}
+
+export async function exportRevisionsZip(revisionIds: string[], format: string): Promise<Blob> {
+  const response = await authorizedFetch(`${API_BASE}/plots/export-zip`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
+    body: JSON.stringify({ revision_ids: revisionIds, format }),
   });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(errorDetail(data, `打包下载失败 (${response.status})`));
+  }
+  return response.blob();
+}
+
+// ------------------------------------------------------- streaming generation
+
+/**
+ * Generate or edit a plot while streaming model tokens and progress stages.
+ * Aborting `signal` closes the connection, which cancels the backend work.
+ */
+export async function streamPlot(
+  kind: "generate" | "edit",
+  body: Record<string, unknown>,
+  onEvent: (event: StreamEvent) => void,
+  signal: AbortSignal,
+): Promise<PlotResult | null> {
+  const response = await authorizedFetch(`${API_BASE}/plots/${kind}/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(errorDetail(data, `请求失败 (${response.status})`));
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: PlotResult | null = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      newline = buffer.indexOf("\n");
+      if (!line) continue;
+      const event = JSON.parse(line) as StreamEvent;
+      if (event.type === "ping") continue;
+      if (event.type === "error") throw new Error(event.detail);
+      if (event.type === "result") result = event.data;
+      onEvent(event);
+    }
+  }
+  return result;
 }

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { composePlots, getRevisionDetail } from "../api";
 import type { DatasetInfo, PlotResult, RevisionSummary } from "../types";
+import { useEscape } from "../utils";
 import type { Language } from "./ParameterInput";
 
 interface ComposerModalProps {
@@ -13,14 +14,27 @@ interface ComposerModalProps {
   onSuccess: (result: PlotResult) => void;
 }
 
-type LayoutKey = "1x2" | "2x1" | "2x2" | "1+2";
+type LayoutKey = "1x2" | "2x1" | "2x2" | "1+2" | "2+1" | "1x3" | "3x1";
 
 const LAYOUT_PANEL_COUNTS: Record<LayoutKey, number> = {
   "1x2": 2,
   "2x1": 2,
   "2x2": 4,
   "1+2": 3,
+  "2+1": 3,
+  "1x3": 3,
+  "3x1": 3,
 };
+
+const LAYOUTS: { key: LayoutKey; zh: string; en: string; cells: string[] }[] = [
+  { key: "1x2", zh: "1×2 左右双图", en: "1×2 side by side", cells: ["", ""] },
+  { key: "2x1", zh: "2×1 上下双图", en: "2×1 stacked", cells: ["", ""] },
+  { key: "1x3", zh: "1×3 横排三图", en: "1×3 row", cells: ["", "", ""] },
+  { key: "3x1", zh: "3×1 竖排三图", en: "3×1 column", cells: ["", "", ""] },
+  { key: "2x2", zh: "2×2 田字四图", en: "2×2 grid", cells: ["", "", "", ""] },
+  { key: "1+2", zh: "1+2 左一右二", en: "1+2 big left", cells: ["span-large", "", ""] },
+  { key: "2+1", zh: "2+1 左二右一", en: "2+1 big right", cells: ["", "", "span-large-right"] },
+];
 
 const PANEL_TAGS = ["A", "B", "C", "D"];
 
@@ -43,6 +57,7 @@ export function ComposerModal({
   ]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEscape(onClose, !busy);
 
   const slotCount = LAYOUT_PANEL_COUNTS[layout];
 
@@ -101,24 +116,18 @@ export function ComposerModal({
           <div className="form-group">
             <label>{language === "zh" ? "选择多图期刊排版网格" : "Choose Subplot Grid Layout"}</label>
             <div className="layout-picker">
-              {(["1x2", "2x1", "2x2", "1+2"] as LayoutKey[]).map((key) => (
+              {LAYOUTS.map(({ key, zh, en, cells }) => (
                 <div
                   key={key}
                   className={`layout-card ${layout === key ? "active" : ""}`}
                   onClick={() => setLayout(key)}
                 >
                   <div className={`layout-preview layout-${key.replace("+", "-plus-")}`}>
-                    {key === "1x2" && <><span /> <span /></>}
-                    {key === "2x1" && <><span /> <span /></>}
-                    {key === "2x2" && <><span /> <span /> <span /> <span /></>}
-                    {key === "1+2" && <><span className="span-large" /> <span /> <span /></>}
+                    {cells.map((cell, index) => (
+                      <span key={index} className={cell || undefined} />
+                    ))}
                   </div>
-                  <div className="layout-title">
-                    {key === "1x2" ? (language === "zh" ? "1×2 左右双图" : "1x2 Side-by-side") : ""}
-                    {key === "2x1" ? (language === "zh" ? "2×1 上下双图" : "2x1 Stacked") : ""}
-                    {key === "2x2" ? (language === "zh" ? "2×2 田字四图" : "2x2 4-Grid") : ""}
-                    {key === "1+2" ? (language === "zh" ? "1+2 左一右二" : "1+2 Multi-scale") : ""}
-                  </div>
+                  <div className="layout-title">{language === "zh" ? zh : en}</div>
                 </div>
               ))}
             </div>

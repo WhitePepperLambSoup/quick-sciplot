@@ -1,21 +1,54 @@
 import { useEffect, useState } from "react";
-import { checkCompliance } from "../api";
+import { checkCompliance, fitJournal } from "../api";
+import type { PlotResult } from "../types";
+import { useEscape } from "../utils";
 import type { Language } from "./ParameterInput";
 
 interface ComplianceModalProps {
   language: Language;
   revisionId: string;
+  datasetId?: string;
+  code?: string;
+  preset?: string;
+  isPlotly?: boolean;
   onClose: () => void;
   onApplyPrompt?: (prompt: string) => void;
+  onFitted?: (result: PlotResult, label: string) => void;
 }
 
 export function ComplianceModal({
   language,
   revisionId,
+  datasetId,
+  code,
+  preset,
+  isPlotly,
   onClose,
   onApplyPrompt,
+  onFitted,
 }: ComplianceModalProps) {
   const [journal, setJournal] = useState<"nature" | "ieee" | "cell">("nature");
+  const [fitting, setFitting] = useState(false);
+  useEscape(onClose, !fitting);
+
+  const fit = async (column: "single" | "double") => {
+    if (!datasetId || !code || !onFitted) return;
+    setFitting(true);
+    setError(null);
+    try {
+      const result = await fitJournal({ dataset_id: datasetId, code, journal, column, preset });
+      const label =
+        language === "zh"
+          ? `${journal.toUpperCase()} ${column === "single" ? "单栏" : "双栏"}（${result.width_inches} in）`
+          : `${journal.toUpperCase()} ${column} column (${result.width_inches} in)`;
+      onFitted(result, label);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFitting(false);
+    }
+  };
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<{
     journal: string;
@@ -121,11 +154,22 @@ export function ComplianceModal({
         </div>
 
         <div className="modal-footer">
-          <button className="btn secondary" onClick={onClose}>
+          {onFitted && datasetId && code && !isPlotly && (
+            <div className="compliance-fit">
+              <span>{language === "zh" ? "一键适配版面宽度：" : "Fit width:"}</span>
+              <button className="btn secondary small" disabled={fitting} onClick={() => void fit("single")}>
+                {language === "zh" ? "单栏" : "Single column"}
+              </button>
+              <button className="btn secondary small" disabled={fitting} onClick={() => void fit("double")}>
+                {language === "zh" ? "双栏" : "Double column"}
+              </button>
+            </div>
+          )}
+          <button className="btn secondary" onClick={onClose} disabled={fitting}>
             {language === "zh" ? "关闭" : "Close"}
           </button>
           {onApplyPrompt && report && !report.passed && (
-            <button className="btn" onClick={handleFillPrompt}>
+            <button className="btn" onClick={handleFillPrompt} disabled={fitting}>
               {language === "zh" ? "填入合规优化指令到对话框" : "Apply Fixes to Chat"}
             </button>
           )}

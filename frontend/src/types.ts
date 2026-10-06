@@ -67,6 +67,9 @@ export interface PlotRun {
   interactive?: PlotlyFigure;
   image?: string;
   size_bytes?: number;
+  /** 1-based line in the user's code where the run failed, when known. */
+  error_line?: number;
+  repair_error?: string;
 }
 
 export interface PlotlyFigure {
@@ -98,6 +101,9 @@ export interface PlotResult {
   meta?: PlotMeta;
   inspected?: InspectedElements;
   run: PlotRun;
+  stats_results?: unknown[];
+  regression?: RegressionFit;
+  width_inches?: number;
 }
 
 export interface RevisionSummary {
@@ -107,6 +113,105 @@ export interface RevisionSummary {
   operation: string;
   success: boolean;
   created_at: string;
+  label?: string;
+  starred?: boolean;
+}
+
+export interface RevisionDetail extends RevisionSummary {
+  code: string;
+  stderr: string;
+}
+
+export interface RegressionFit {
+  x_col: string;
+  y_col: string;
+  degree: number;
+  n: number;
+  coefficients: number[];
+  r_squared: number;
+  p_value?: number;
+  equation: string;
+}
+
+export interface SystemStatus {
+  sandbox_mode: "process" | "docker";
+  sandbox_ready: boolean;
+  process_allowed: boolean;
+  desktop: boolean;
+  can_enable_process: boolean;
+  can_build_image: boolean;
+  docker: { installed: boolean; daemon_running: boolean; image_present: boolean; image: string };
+  image_build: { state: "idle" | "running" | "succeeded" | "failed"; error: string; log: string[] };
+  llm_configured: boolean;
+  llm_mock: boolean;
+}
+
+export interface DatasetPreview {
+  columns: string[];
+  dtypes: Record<string, string>;
+  rows: Record<string, unknown>[];
+  offset: number;
+  total_rows: number;
+}
+
+export interface ColumnValues {
+  column: string;
+  values: { value: string; count: number }[];
+  total_unique: number;
+  truncated: boolean;
+}
+
+export type TransformOperation = { op: string } & Record<string, unknown>;
+
+export interface TemplateParam {
+  name: string;
+  label_zh: string;
+  label_en: string;
+  kind: "column" | "numeric" | "numeric_multi" | "number" | "choice";
+  required: boolean;
+  default: unknown;
+  options: string[];
+  minimum: number | null;
+  maximum: number | null;
+}
+
+export interface TemplateInfo {
+  id: string;
+  name_zh: string;
+  name_en: string;
+  description_zh: string;
+  description_en: string;
+  params: TemplateParam[];
+}
+
+export interface BatchItem {
+  dataset_id: string;
+  name?: string;
+  revision_id?: string;
+  success: boolean;
+  stderr?: string;
+  error?: string;
+  export_formats?: string[];
+}
+
+export type StreamStage = "llm" | "render" | "repair";
+
+export type StreamEvent =
+  | { type: "stage"; stage: StreamStage }
+  | { type: "token"; text: string }
+  | { type: "result"; data: PlotResult }
+  | { type: "error"; status: number; detail: string }
+  | { type: "cancelled" }
+  | { type: "ping" };
+
+export interface CritiqueReport {
+  score: number;
+  suggestions: string[];
+  has_overlap: boolean;
+  legend_ok: boolean;
+  dpi_ok: boolean;
+  repair_prompt: string;
+  ai?: { available: boolean; score?: number; issues?: string[]; suggestions?: string[]; error?: string };
 }
 
 export interface LLMConfig {
@@ -119,6 +224,8 @@ export interface LLMConfig {
   sandbox_timeout: number;
   sandbox_mode: "process" | "docker";
   send_data_values: boolean;
+  allow_loopback_llm?: boolean;
+  desktop?: boolean;
 }
 
 export interface ConnectionResult {

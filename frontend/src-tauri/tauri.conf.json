@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Quick SciPlot",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "com.quicksciplot.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,7 +29,10 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "externalBin": ["binaries/quick-sciplot-backend"],
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "backend-dist/": "backend/"
+    },
     "icon": [
       "icons/icon.ico",
       "icons/32x32.png",
@@ -37,5 +40,16 @@
       "icons/128x128@2x.png",
       "icons/icon.icns"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJBNjRDRDMwMDAzNzNDRDcKUldUWFBEY0FNTTFrS3RENEdoeGhyYTdxODhNQXZ4d3IrWXRiM25qUUk2ZnU5RUFHNkxVVkFwV3oK",
+      "endpoints": [
+        "https://github.com/WhitePepperLambSoup/quick-sciplot/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

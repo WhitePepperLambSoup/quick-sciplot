@@ -82,6 +82,38 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_revisions_dataset ON revisions(dataset_id);
             """
         )
+        # Columns added after 0.2.0; ALTER keeps existing user history.
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(revisions)").fetchall()}
+        if "label" not in existing:
+            conn.execute("ALTER TABLE revisions ADD COLUMN label TEXT NOT NULL DEFAULT ''")
+        if "starred" not in existing:
+            conn.execute("ALTER TABLE revisions ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
+
+
+MAX_REVISION_LABEL = 80
+
+
+def update_revision(revision_id: str, *, label: str | None = None, starred: bool | None = None) -> dict | None:
+    """Rename or (un)star a revision; starred revisions are exempt from pruning."""
+    assignments: list[str] = []
+    values: list[object] = []
+    if label is not None:
+        clean = " ".join(str(label).split())[:MAX_REVISION_LABEL]
+        assignments.append("label = ?")
+        values.append(clean)
+    if starred is not None:
+        assignments.append("starred = ?")
+        values.append(int(bool(starred)))
+    if assignments:
+        with _connect() as conn:
+            cursor = conn.execute(
+                f"UPDATE revisions SET {', '.join(assignments)} WHERE id = ?",
+                [*values, revision_id],
+            )
+            if cursor.rowcount == 0:
+                return None
+    revision = get_revision(revision_id)
+    return public_revision(revision) if revision else None
 
 
 def save_dataset(dataset: dict) -> None:
@@ -277,6 +309,7 @@ def prune_revisions(*, max_revisions_per_dataset: int, max_output_bytes: int) ->
             """
             SELECT rowid AS row_id, id, dataset_id, output_dir, created_at
             FROM revisions
+            WHERE starred = 0
             ORDER BY created_at DESC, rowid DESC
             """
         ).fetchall()
@@ -372,10 +405,10 @@ def list_revisions(dataset_id: str) -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, dataset_id, preset, operation, success, created_at
+            SELECT id, dataset_id, preset, operation, success, created_at, label, starred
             FROM revisions
             WHERE dataset_id = ?
-            ORDER BY created_at DESC, id DESC
+            ORDER BY created_at DESC, rowid DESC
             """,
             (dataset_id,),
         ).fetchall()
@@ -387,6 +420,8 @@ def list_revisions(dataset_id: str) -> list[dict]:
             "operation": row["operation"],
             "success": bool(row["success"]),
             "created_at": row["created_at"],
+            "label": row["label"],
+            "starred": bool(row["starred"]),
         }
         for row in rows
     ]
@@ -396,7 +431,7 @@ def get_revision(revision_id: str) -> dict | None:
     with _connect() as conn:
         row = conn.execute(
             """
-            SELECT id, dataset_id, code, preset, operation, output_dir, success, stderr, created_at
+            SELECT id, dataset_id, code, preset, operation, output_dir, success, stderr, created_at, label, starred
             FROM revisions
             WHERE id = ?
             """,
@@ -414,6 +449,8 @@ def get_revision(revision_id: str) -> dict | None:
         "success": bool(row["success"]),
         "stderr": row["stderr"],
         "created_at": row["created_at"],
+        "label": row["label"],
+        "starred": bool(row["starred"]),
     }
 
 
@@ -428,5 +465,7 @@ def public_revision(revision: dict) -> dict:
         "success",
         "stderr",
         "created_at",
+        "label",
+        "starred",
     )
     return {key: revision[key] for key in public_keys if key in revision}

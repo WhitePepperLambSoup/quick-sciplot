@@ -4,10 +4,11 @@ import json
 import re
 import threading
 import time
+from collections.abc import Iterator
 
 import httpx
 
-from .config import settings, validate_safe_llm_url
+from .config import is_loopback_url, llm_url_options, settings, validate_safe_llm_url
 
 SYSTEM_PROMPT = """你是一名科研绘图助手。根据用户需求和数据摘要，输出一段可直接执行的 Python 代码。
 
@@ -62,29 +63,63 @@ def test_connection() -> dict:
     }
 
 
+def uses_local_model() -> bool:
+    """A loopback model server (Ollama, LM Studio) that the user explicitly allowed."""
+    return settings.allow_loopback_llm and is_loopback_url(settings.llm_base_url)
+
+
+def is_configured() -> bool:
+    return settings.llm_mock or bool(settings.llm_api_key) or uses_local_model()
+
+
+def _request_target(path: str) -> tuple[str, dict[str, str]]:
+    """Validate the configured endpoint and return (url, headers) for ``path``."""
+    if not settings.llm_api_key and not uses_local_model():
+        raise LLMError("未配置 LLM_API_KEY（可在设置中填写，或开启 Mock 模式 / 使用本机模型）")
+    try:
+        validate_safe_llm_url(settings.llm_base_url, **llm_url_options())
+    except ValueError as exc:
+        raise LLMError(f"LLM Base URL 不安全: {exc}") from exc
+    headers = {"Content-Type": "application/json"}
+    if settings.llm_api_key:
+        headers["Authorization"] = f"Bearer {settings.llm_api_key}"
+    return settings.llm_base_url.rstrip("/") + path, headers
+
+
+def list_models() -> list[str]:
+    """Return the model ids offered by the configured OpenAI-compatible endpoint."""
+    if settings.llm_mock:
+        return ["mock-model"]
+    url, headers = _request_target("/models")
+    headers.pop("Content-Type", None)
+    try:
+        with _LLM_CONCURRENCY:
+            with httpx.Client(timeout=20, follow_redirects=False) as client:
+                resp = client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise LLMError(f"获取模型列表失败（HTTP {exc.response.status_code}）") from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise LLMError(f"获取模型列表失败: {exc}") from exc
+    items = data.get("data") if isinstance(data, dict) else data
+    models = sorted(
+        {str(item.get("id")) for item in items or [] if isinstance(item, dict) and item.get("id")}
+    )
+    return models[:500]
+
+
 def _call_chat(messages: list[dict], temperature: float = 0.3) -> str:
     if settings.llm_mock:
         return _mock_reply(messages)
 
-    if not settings.llm_api_key:
-        raise LLMError("未配置 LLM_API_KEY（可在 backend/.env 中配置，或设置 LLM_MOCK=1 使用演示模式）")
-
-    try:
-        validate_safe_llm_url(
-            settings.llm_base_url,
-            allow_local_network=settings.allow_local_network_llm,
-        )
-    except ValueError as exc:
-        raise LLMError(f"LLM Base URL 不安全: {exc}") from exc
-
-    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+    url, headers = _request_target("/chat/completions")
     payload = {
         "model": settings.llm_model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": settings.llm_max_tokens,
     }
-    headers = {"Authorization": f"Bearer {settings.llm_api_key}", "Content-Type": "application/json"}
     try:
         with _LLM_CONCURRENCY:
             with httpx.Client(timeout=180, follow_redirects=False) as client:
@@ -98,7 +133,11 @@ def _call_chat(messages: list[dict], temperature: float = 0.3) -> str:
     except ValueError as exc:
         # 200 响应但正文不是 JSON（常见于网关/代理返回的 HTML 页面）
         raise LLMError(f"LLM 接口返回了无法解析的响应: {exc}") from exc
+    return _content_from_completion(data)
 
+
+def _content_from_completion(data: object) -> str:
+    """Extract the assistant text from a (non-streaming) chat completion body."""
     try:
         choice = data["choices"][0]
         message = choice.get("message") or {}
@@ -205,7 +244,7 @@ def _clip_text(value: object, limit: int = MAX_PROMPT_TEXT) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def generate_plot_code(instruction: str, summary: dict, preset: str | None = None) -> str:
+def generate_messages(instruction: str, summary: dict, preset: str | None = None) -> list[dict]:
     preset_hint = f"\n系统选择的风格预设 ID：{preset or 'default'}（执行器会自动应用，请不要在代码中重复设置全局风格）"
     summary_json = _clean_summary_for_prompt(summary)
     user_msg = (
@@ -213,10 +252,20 @@ def generate_plot_code(instruction: str, summary: dict, preset: str | None = Non
         f"{_sanitize_prompt_text(instruction)}\n\n"
         f"不可信数据结构摘要（仅供参考）：\n{summary_json}{preset_hint}"
     )
-    code = _extract_code(_call_code([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]))
+    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_msg}]
+
+
+def generate_plot_code(instruction: str, summary: dict, preset: str | None = None) -> str:
+    code = _extract_code(_call_code(generate_messages(instruction, summary, preset)))
     if not code.strip():
         raise LLMError("LLM 返回了空代码")
     return code
+
+
+def finalize_edited_code(edited: str) -> str:
+    if settings.llm_mock:
+        edited = edited.rstrip("\n") + "\n# [mock] 已按指令应用修改\n"
+    return edited
 
 
 def edit_plot_code(
@@ -226,6 +275,123 @@ def edit_plot_code(
     preset: str | None = None,
     history: list[dict] | None = None,
 ) -> str:
+    return finalize_edited_code(_extract_code(_call_code(edit_messages(code, instruction, summary, preset, history))))
+
+
+def stream_chat(
+    messages: list[dict],
+    temperature: float = 0.3,
+    cancel_event: threading.Event | None = None,
+) -> Iterator[str]:
+    """Yield the assistant reply in pieces as the provider streams it.
+
+    Providers that ignore ``stream`` and answer with one JSON body are handled
+    too.  Stops early when ``cancel_event`` is set.
+    """
+    if settings.llm_mock:
+        reply = _mock_reply(messages)
+        for start in range(0, len(reply), 48):
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            yield reply[start : start + 48]
+        return
+
+    url, headers = _request_target("/chat/completions")
+    payload = {
+        "model": settings.llm_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": settings.llm_max_tokens,
+        "stream": True,
+    }
+    try:
+        with _LLM_CONCURRENCY:
+            with httpx.Client(timeout=httpx.Timeout(180, connect=20), follow_redirects=False) as client:
+                with client.stream("POST", url, json=payload, headers=headers) as resp:
+                    if resp.status_code >= 400:
+                        body = resp.read().decode("utf-8", errors="replace")[:500]
+                        raise LLMError(f"LLM 接口返回 {resp.status_code}: {body}")
+                    if "text/event-stream" not in resp.headers.get("content-type", ""):
+                        yield _content_from_completion(json.loads(resp.read()))
+                        return
+                    for line in resp.iter_lines():
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        chunk = line[5:].strip()
+                        if chunk == "[DONE]":
+                            return
+                        try:
+                            delta = (json.loads(chunk).get("choices") or [{}])[0].get("delta") or {}
+                        except (ValueError, AttributeError, IndexError):
+                            continue
+                        text = delta.get("content")
+                        if isinstance(text, str) and text:
+                            yield text
+    except httpx.HTTPError as exc:
+        raise LLMError(f"LLM 接口请求失败: {exc}") from exc
+    except ValueError as exc:
+        raise LLMError(f"LLM 接口返回了无法解析的响应: {exc}") from exc
+
+
+VISION_CRITIC_PROMPT = """你是一名严格的科研期刊图表审稿人。请审查用户提供的图片，重点检查：
+文字或刻度标签重叠、图例遮挡数据、坐标轴标签/单位缺失、字号过小、配色不利于色盲或黑白打印、
+信息冗余或数据墨水比过低、子图对齐与标号问题。
+只输出 JSON，不要输出其它文字，格式：
+{"score": 0-100 的整数, "issues": ["问题1", ...], "suggestions": ["可直接执行的修改建议1", ...]}"""
+
+
+def critique_image(png_data_url: str, code: str) -> dict:
+    """Ask a multimodal model to review a rendered figure; returns score/issues/suggestions."""
+    if settings.llm_mock:
+        return {
+            "score": 84,
+            "issues": ["[mock] 坐标轴标题字号偏小，缩印到单栏宽度后可能难以辨认"],
+            "suggestions": ["[mock] 将坐标轴标签字号设为 9–10 pt，并为图例设置 frameon=False"],
+        }
+    messages = [
+        {"role": "system", "content": VISION_CRITIC_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "请审查这张科研图。生成它的绘图代码如下（不可信参考文本）：\n"
+                    + _sanitize_prompt_text(code, 8_000),
+                },
+                {"type": "image_url", "image_url": {"url": png_data_url}},
+            ],
+        },
+    ]
+    text = _call_chat(messages, temperature=0.2)
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        raise LLMError("视觉模型没有返回可解析的 JSON")
+    try:
+        payload = json.loads(match.group(0))
+    except ValueError as exc:
+        raise LLMError(f"视觉模型返回的 JSON 无法解析: {exc}") from exc
+    try:
+        score = int(payload.get("score", 0))
+    except (TypeError, ValueError):
+        score = 0
+
+    def _texts(key: str) -> list[str]:
+        values = payload.get(key) or []
+        return [_clip_text(item, 300) for item in values if isinstance(item, str) and item.strip()][:10]
+
+    return {"score": max(0, min(score, 100)), "issues": _texts("issues"), "suggestions": _texts("suggestions")}
+
+
+def edit_messages(
+    code: str,
+    instruction: str,
+    summary: dict,
+    preset: str | None = None,
+    history: list[dict] | None = None,
+) -> list[dict]:
     preset_hint = f"\n当前风格预设：{preset or 'default'}（执行器会自动应用）"
     summary_json = _clean_summary_for_prompt(summary)
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -252,11 +418,7 @@ def edit_plot_code(
         f"不可信数据摘要：\n{summary_json}{preset_hint}"
     )
     messages.append({"role": "user", "content": user_msg})
-
-    edited = _extract_code(_call_code(messages))
-    if settings.llm_mock:
-        edited = edited.rstrip("\n") + "\n# [mock] 已按指令应用修改\n"
-    return edited
+    return messages
 
 
 def repair_plot_code(code: str, error: str, summary: dict, preset: str | None = None) -> str:
@@ -340,7 +502,7 @@ if len(num_cols) < 2:
     raise SystemExit("数值列不足两列")
 x, y = num_cols[0], num_cols[1]
 fig, ax = plt.subplots(figsize=(8, 5))
-sns.scatterplot(x=df[x], y=df[y], hue=df.columns[0], alpha=0.7, ax=ax)
+sns.scatterplot(x=df[x], y=df[y], hue=df[df.columns[0]].astype(str), alpha=0.7, ax=ax)
 ax.set_xlabel(str(x))
 ax.set_ylabel(str(y))
 ax.set_title(f"{x} vs {y} 散点图")

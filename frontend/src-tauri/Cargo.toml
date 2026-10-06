@@ -1,6 +1,6 @@
 [package]
 name = "quick-sciplot"
-version = "0.2.0"
+version = "0.3.0"
 description = "LLM-powered scientific plotting desktop application"
 authors = ["pic contributors"]
 edition = "2021"
@@ -13,4 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+serde_json = "1"
 tauri = { version = "2", features = [] }
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"

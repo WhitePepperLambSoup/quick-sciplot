@@ -84,7 +84,71 @@ def inspect_code_elements(code: str) -> dict[str, Any]:
                     if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
                         xlim = [float(v1), float(v2)]
 
+        # Plotly: fig.add_hline / fig.add_vline / fig.update_yaxes(range=[...])
+        elif func_name in ("fig.add_hline", "fig.add_vline"):
+            axis = "y" if func_name.endswith("hline") else "x"
+            val = _eval_literal(node.args[0]) if node.args else None
+            for kw in node.keywords:
+                if kw.arg == axis:
+                    val = _eval_literal(kw.value)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                (hlines if axis == "y" else vlines).append(float(val))
+        elif func_name in ("fig.update_yaxes", "fig.update_xaxes"):
+            for kw in node.keywords:
+                if kw.arg == "range":
+                    pair = _eval_literal(kw.value)
+                    if (
+                        isinstance(pair, (list, tuple))
+                        and len(pair) == 2
+                        and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in pair)
+                    ):
+                        if func_name == "fig.update_yaxes":
+                            ylim = [float(pair[0]), float(pair[1])]
+                        else:
+                            xlim = [float(pair[0]), float(pair[1])]
+
     return {"hlines": hlines, "vlines": vlines, "ylim": ylim, "xlim": xlim}
+
+
+_NUMBER = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
+_PLOTLY_DASH = {"--": "dash", ":": "dot", "-.": "dashdot", "-": "solid"}
+
+
+def is_plotly_code(code: str) -> bool:
+    """Whether the script builds a Plotly figure (``fig``) rather than a Matplotlib one."""
+    return bool(re.search(r"^\s*(?:import plotly|from plotly)", code, flags=re.MULTILINE))
+
+
+def _append_plotly_statement(code: str, statement: str) -> str:
+    lines = code.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().startswith("fig.show"):
+            indent = line[: len(line) - len(line.lstrip())]
+            lines.insert(index, indent + statement)
+            return "\n".join(lines)
+    lines.append(statement)
+    return "\n".join(lines)
+
+
+def _plotly_reference_line(code: str, axis: str, value: float, color: str, linestyle: str, label: str) -> str:
+    function = "add_hline" if axis == "y" else "add_vline"
+    pattern = re.compile(rf"(fig\.{function}\s*\(\s*(?:{axis}\s*=\s*)?)({_NUMBER})")
+    if pattern.search(code):
+        return pattern.sub(rf"\g<1>{value}", code, count=1)
+    dash = _PLOTLY_DASH.get(linestyle, "dash")
+    statement = (
+        f"fig.{function}({axis}={value}, line_dash={dash!r}, line_color={color!r}, "
+        f"line_width=1.2, annotation_text={label!r})"
+    )
+    return _append_plotly_statement(code, statement)
+
+
+def _plotly_axis_range(code: str, axis: str, low: float, high: float) -> str:
+    function = f"update_{axis}axes"
+    pattern = re.compile(rf"(fig\.{function}\s*\([^)]*?range\s*=\s*\[)\s*{_NUMBER}\s*,\s*{_NUMBER}\s*(\])")
+    if pattern.search(code):
+        return pattern.sub(rf"\g<1>{low}, {high}\g<2>", code, count=1)
+    return _append_plotly_statement(code, f"fig.{function}(range=[{low}, {high}])")
 
 
 def adjust_hline(
@@ -165,8 +229,28 @@ def adjust_xlim(code: str, xmin: float, xmax: float) -> str:
     return _inject_ax_statement(code, f"{call}({xmin_val}, {xmax_val})")
 
 
+def _apply_plotly_action(code: str, action: str, params: dict[str, Any]) -> str:
+    if action in ("hline", "vline"):
+        axis = "y" if action == "hline" else "x"
+        value = round(_finite_number(params.get(axis, 0.0), axis), 4)
+        color = _text_param(params.get("color", "red" if axis == "y" else "blue"), "color")
+        linestyle = _text_param(params.get("linestyle", "--"), "linestyle")
+        label = _text_param(params.get("label", "Cutoff" if axis == "y" else "Marker"), "label")
+        return _plotly_reference_line(code, axis, value, color, linestyle, label)
+    if action in ("ylim", "xlim"):
+        axis = action[0]
+        low = round(_finite_number(params.get(f"{axis}min", 0.0), f"{axis}min"), 4)
+        high = round(_finite_number(params.get(f"{axis}max", 10.0), f"{axis}max"), 4)
+        if low > high:
+            low, high = high, low
+        return _plotly_axis_range(code, axis, low, high)
+    raise ManipulationError(f"未知的交互修正动作: {action}")
+
+
 def apply_visual_action(code: str, action: str, params: dict[str, Any]) -> str:
     """总入口：按交互动作类型修改 Python 代码。"""
+    if is_plotly_code(code):
+        return _apply_plotly_action(code, action, params)
     if action == "hline":
         y = params.get("y", 0.0)
         color = params.get("color", "red")

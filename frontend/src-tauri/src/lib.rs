@@ -115,6 +115,8 @@ fn launch_backend(
     }
     let result = command
         .env("PYTHONUNBUFFERED", "1")
+        // Lets the first-run wizard offer the local worker when Docker is missing.
+        .env("QUICK_SCIPLOT_DESKTOP", "1")
         .env("DATA_DIR", data_dir)
         .env("QUICK_SCIPLOT_CONFIG_DIR", config_dir)
         .stdin(Stdio::null())
@@ -188,26 +190,42 @@ fn terminate_child(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn find_sidecar(app: &AppHandle) -> Option<PathBuf> {
-    let resource_dir = app.path().resource_dir().ok()?;
+/// Where the packaged backend may live, in order of preference.
+///
+/// Releases ship a PyInstaller one-dir build as the `backend/` resource folder
+/// (fast start-up); the older one-file sidecar names are kept as a fallback.
+fn sidecar_candidates(resource_dir: &Path) -> Vec<PathBuf> {
     let target = option_env!("TAURI_ENV_TARGET_TRIPLE").unwrap_or("x86_64-pc-windows-msvc");
-    let names = [
+    let executable = if cfg!(target_os = "windows") {
+        "quick-sciplot-backend.exe"
+    } else {
+        "quick-sciplot-backend"
+    };
+    let mut candidates = vec![resource_dir.join("backend").join(executable)];
+    for name in [
         format!("quick-sciplot-backend-{target}.exe"),
         "quick-sciplot-backend.exe".to_string(),
         format!("quick-sciplot-backend-{target}"),
         "quick-sciplot-backend".to_string(),
-    ];
-    for name in names {
-        for path in [
-            resource_dir.join(&name),
-            resource_dir.join("binaries").join(&name),
-        ] {
-            if path.is_file() {
-                return Some(path);
-            }
-        }
+    ] {
+        candidates.push(resource_dir.join(&name));
+        candidates.push(resource_dir.join("binaries").join(&name));
     }
-    None
+    candidates
+}
+
+fn find_sidecar(app: &AppHandle) -> Option<PathBuf> {
+    let resource_dir = app.path().resource_dir().ok()?;
+    sidecar_candidates(&resource_dir)
+        .into_iter()
+        .find(|path| path.is_file() && is_real_executable(path))
+}
+
+/// CI builds the shell with an empty placeholder backend; never launch that.
+fn is_real_executable(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false)
 }
 
 fn stop_backend(state: &BackendProcess) {
@@ -220,8 +238,19 @@ fn stop_backend(state: &BackendProcess) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_port_available, read_session_token};
+    use super::{is_port_available, read_session_token, sidecar_candidates};
     use std::net::TcpListener;
+    use std::path::Path;
+
+    #[test]
+    fn one_dir_backend_is_preferred_over_legacy_sidecars() {
+        let candidates = sidecar_candidates(Path::new("res"));
+        let first = candidates.first().expect("at least one candidate");
+        assert!(first.starts_with(Path::new("res").join("backend")));
+        assert!(candidates
+            .iter()
+            .any(|path| path.starts_with(Path::new("res").join("binaries"))));
+    }
 
     #[test]
     fn occupied_port_is_reported_unavailable() {
@@ -259,6 +288,8 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![session_token])
         .setup(|app| {
             let backend = start_backend(app.handle());

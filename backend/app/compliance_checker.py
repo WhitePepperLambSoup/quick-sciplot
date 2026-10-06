@@ -4,7 +4,9 @@
 检查图像尺寸 (单栏/双栏)、分辨率 (DPI)、字体规范和矢量格式支持度。
 """
 
+import re
 from pathlib import Path
+
 from PIL import Image
 
 JOURNAL_SPECS = {
@@ -33,6 +35,36 @@ JOURNAL_SPECS = {
         "max_filesize_mb": 10,
     },
 }
+
+
+_FIT_BLOCK = re.compile(r"\n# --- 期刊版面尺寸：.*?# --- 期刊版面尺寸结束 ---\n?", flags=re.DOTALL)
+
+
+def fit_figure_code(code: str, journal: str, column: str = "single") -> tuple[str, float]:
+    """Append (or replace) code that resizes the figure to a journal column width.
+
+    The aspect ratio is kept, so text and markers become relatively larger when
+    a wide figure is shrunk to a single column, which is what print needs.
+    """
+    key = (journal or "").lower().strip()
+    if key not in JOURNAL_SPECS:
+        raise ValueError(f"未知期刊: {journal}")
+    if column not in {"single", "double"}:
+        raise ValueError("版面只能是 single（单栏）或 double（双栏）")
+    if re.search(r"^\s*(?:import plotly|from plotly)", code, flags=re.MULTILINE):
+        raise ValueError("Plotly 交互图不支持按期刊版面调整尺寸")
+    spec = JOURNAL_SPECS[key]
+    width = spec["single_col_width_inches" if column == "single" else "double_col_width_inches"]
+    column_name = "单栏" if column == "single" else "双栏"
+    block = (
+        f"\n# --- 期刊版面尺寸：{spec['name']} {column_name}（{width} in）---\n"
+        "import matplotlib.pyplot as plt\n"
+        "_journal_fig = plt.gcf()\n"
+        "_journal_w, _journal_h = _journal_fig.get_size_inches()\n"
+        f"_journal_fig.set_size_inches({width!r}, {width!r} * _journal_h / max(_journal_w, 1e-6))\n"
+        "# --- 期刊版面尺寸结束 ---\n"
+    )
+    return _FIT_BLOCK.sub("\n", code).rstrip() + "\n" + block, width
 
 
 def dpi_from_image_info(raw) -> int | None:
