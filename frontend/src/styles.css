@@ -3068,3 +3068,339 @@ body {
     flex-direction: column;
   }
 }
+
+/* ------------------------------------------------ drag-to-correct data points */
+
+.point-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+}
+
+.point-overlay.busy {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.point-overlay-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+  cursor: crosshair;
+  overflow: visible;
+}
+
+.point-hit {
+  fill: transparent;
+  stroke: none;
+}
+
+.point-handle {
+  fill: rgba(255, 255, 255, 0.55);
+  stroke: var(--primary-500);
+  stroke-width: 1.6;
+  transition: r var(--transition-fast);
+}
+
+.point-handle-group:hover .point-handle {
+  r: 7;
+  fill: rgba(255, 255, 255, 0.85);
+}
+
+.point-handle.selected {
+  fill: var(--primary-500);
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.point-handle.edited {
+  stroke: var(--warning-500);
+  stroke-width: 2.2;
+}
+
+.point-handle.selected.edited {
+  fill: var(--warning-500);
+}
+
+.point-ghost {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.2;
+  stroke-dasharray: 2 2;
+  pointer-events: none;
+}
+
+.point-trail {
+  stroke: var(--warning-500);
+  stroke-width: 1.4;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+.point-bar-end {
+  stroke: var(--warning-500);
+  stroke-width: 3;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+.point-cleared path {
+  stroke: var(--danger-500);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.point-cleared.selected path {
+  stroke-width: 3.2;
+}
+
+.point-band {
+  fill: rgba(79, 70, 229, 0.08);
+  stroke: var(--primary-500);
+  stroke-dasharray: 4 3;
+}
+
+.point-drag-hint {
+  position: absolute;
+  max-width: 260px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(15, 23, 42, 0.88);
+  color: #f8fafc;
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+  box-shadow: var(--shadow-md);
+  z-index: 30;
+}
+
+.point-panel {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--primary-200);
+  border-radius: var(--radius-md);
+  background: var(--primary-50);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.point-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.point-summary,
+.point-tip,
+.point-integrity,
+.point-empty {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.point-tip,
+.point-integrity {
+  color: var(--text-muted);
+}
+
+.point-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.point-history-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.point-selection {
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.point-selection-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.point-selection-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.point-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.point-field input {
+  width: 110px;
+}
+
+.point-field small,
+.point-field.readonly {
+  color: var(--text-muted);
+}
+
+.point-selection-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.point-pending-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.point-pending-table {
+  width: 100%;
+  margin-top: 4px;
+  border-collapse: collapse;
+  background: var(--bg-surface);
+}
+
+.point-pending-table th,
+.point-pending-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+}
+
+.point-pending-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.point-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.point-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--primary-600);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.btn-link:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.dataset-corrected-badge {
+  flex-shrink: 0;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  background: var(--warning-50);
+  border: 1px solid var(--warning-500);
+  color: var(--warning-text);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.preview-table td.cell-editable {
+  cursor: text;
+}
+
+.preview-table td.cell-edited {
+  background: #fef9c3;
+  font-weight: 600;
+}
+
+.preview-table td.cell-editing {
+  padding: 0;
+}
+
+.preview-table td.cell-editing input {
+  width: 100%;
+  min-width: 70px;
+  border: 2px solid var(--primary-500);
+  padding: 3px 5px;
+  font: inherit;
+}
+
+.cell-edit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.cell-edit-bar input {
+  flex: 1;
+  min-width: 160px;
+}
+
+.corrections-table td {
+  white-space: nowrap;
+}
+
+/* Fixed heights keep the panel (and therefore the figure above it) from
+   resizing while a point is selected or dragged. */
+.point-selection {
+  height: 96px;
+  overflow: auto;
+  box-sizing: border-box;
+}
+
+.point-selection-empty,
+.point-pending-empty {
+  color: var(--text-muted);
+}
+
+.point-pending-body {
+  height: 112px;
+  overflow: auto;
+  margin-top: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.point-pending-empty {
+  padding: 8px;
+}
+
+.point-pending-body .point-pending-table {
+  margin-top: 0;
+}
+
+/* Cap the chat history so a long conversation scrolls inside the panel instead
+   of stretching the whole row (which pushed the figure down the page). */
+.chat {
+  max-height: calc(100vh - 360px);
+}

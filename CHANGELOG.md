@@ -6,6 +6,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Drag data points to correct data: in **Drag points** mode every mark that plots raw values (scatter points, line vertices, one-bar-per-row bars, strip/jitter points, on Matplotlib and Plotly figures, linear or log axes, category or date x axes) gets a handle bound to its dataset row. Drag one point or a box/Shift selection together, lock the direction, nudge with arrow keys, type an exact value, mark values missing, and undo/redo before applying. Applying saves a new dataset version (the original is never overwritten) with a per-cell log of old and new values, time and reason, and re-renders the figure; a toast offers to undo the correction.
+- Cell editing in the data workbench preview (double-click a cell), saved the same way, and a **Corrections** tab showing the full edit log. Corrected datasets carry a ✎ badge, and project bundles include `data_corrections.csv`.
 - First-run setup wizard: checks Docker, builds the sandbox image from inside the app with a live log, or enables the bundled local worker after an explicit risk confirmation (desktop app only).
 - Streaming generation: model output appears as it is written, with the current stage (writing, rendering, auto-repairing) and a **Cancel** button that also stops the running renderer.
 - Data workbench: paginated table preview; filter, wide-to-long, select, sort and drop-missing steps; key-based joins (inner/left/right/outer) with a guard against many-to-many blow-ups. Results are saved as new datasets.
@@ -32,6 +34,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Chinese text rendered as boxes when the plotting code called `sns.set_style()` or similar after the fonts were set.
 - The mock scatter example always failed and was replaced by the auto-repair result.
 - The statistics dialog ignored the selected style preset.
+- Interactive-correction handles were offset from the figure because they used whole-canvas coordinates while the PNG is tight-cropped; they now use the exact image geometry and support log axes.
+- A long chat history stretched the page and pushed the figure down; the history now scrolls inside its panel.
 
 ### Known Limitations
 

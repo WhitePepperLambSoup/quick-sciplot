@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { PlotlyElement } from "plotly.js-dist-min";
 import type { PlotlyFigure } from "../types";
 
 export interface AxisRanges {
@@ -10,6 +11,8 @@ interface InteractivePlotProps {
   figure: PlotlyFigure;
   /** Called with the visible axis ranges whenever the user zooms or pans. */
   onRangesChange?: (ranges: AxisRanges) => void;
+  /** Called with the graph div after every (re)draw, e.g. to place overlays. */
+  onLayout?: (graph: PlotlyElement | null) => void;
 }
 
 function numericRange(value: unknown): [number, number] | undefined {
@@ -18,10 +21,12 @@ function numericRange(value: unknown): [number, number] | undefined {
   return Number.isFinite(low) && Number.isFinite(high) ? [low, high] : undefined;
 }
 
-export function InteractivePlot({ figure, onRangesChange }: InteractivePlotProps) {
+export function InteractivePlot({ figure, onRangesChange, onLayout }: InteractivePlotProps) {
   const plotRef = useRef<HTMLDivElement>(null);
   const callbackRef = useRef(onRangesChange);
   callbackRef.current = onRangesChange;
+  const layoutRef = useRef(onLayout);
+  layoutRef.current = onLayout;
 
   useEffect(() => {
     const element = plotRef.current;
@@ -38,12 +43,15 @@ export function InteractivePlot({ figure, onRangesChange }: InteractivePlotProps
           x: numericRange(graph.layout?.xaxis?.range),
           y: numericRange(graph.layout?.yaxis?.range),
         });
+        layoutRef.current?.(graph);
       };
       report();
       graph.on("plotly_relayout", report);
+      graph.on("plotly_afterplot", () => layoutRef.current?.(graph));
     });
     return () => {
       disposed = true;
+      layoutRef.current?.(null);
       void import("plotly.js-dist-min").then(({ default: Plotly }) => Plotly.purge(element));
     };
   }, [figure]);

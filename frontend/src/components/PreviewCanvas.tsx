@@ -1,10 +1,12 @@
-import { lazy, Suspense, useState } from "react";
-import type { PlotResult } from "../types";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import type { PlotlyElement } from "plotly.js-dist-min";
+import type { CellEdit, PlotResult } from "../types";
 import { downloadExport } from "../api";
 import { saveBlob } from "../utils";
 import { InteractiveManipulator } from "./InteractiveManipulator";
 import type { AxisRanges } from "./InteractivePlot";
 import type { Language } from "./ParameterInput";
+import { PointEditPanel, PointOverlay, usePointEditor } from "./PointEditor";
 
 const LazyInteractivePlot = lazy(() => import("./InteractivePlot").then((m) => ({ default: m.InteractivePlot })));
 
@@ -16,6 +18,8 @@ interface PreviewCanvasProps {
   onOpenStatsModal?: () => void;
   onOpenComplianceModal?: () => void;
   onInteractiveAdjust?: (action: string, params: Record<string, unknown>) => Promise<void>;
+  /** Save dragged data-point corrections as a new dataset version and re-render. */
+  onApplyPointEdits?: (edits: CellEdit[], note: string) => Promise<boolean>;
 }
 
 const EXPORTS: { format: string; label: string; title: string; extension: string }[] = [
@@ -38,6 +42,7 @@ export function PreviewCanvas({
   onOpenStatsModal,
   onOpenComplianceModal,
   onInteractiveAdjust,
+  onApplyPointEdits,
 }: PreviewCanvasProps) {
   const zh = language === "zh";
   const [manipulating, setManipulating] = useState(false);
@@ -47,6 +52,23 @@ export function PreviewCanvas({
   const [hlineValue, setHlineValue] = useState("");
 
   const isInteractive = Boolean(result?.run.success && result.run.interactive);
+  const [pointMode, setPointMode] = useState(false);
+  const [graph, setGraph] = useState<PlotlyElement | null>(null);
+  const [layoutTick, setLayoutTick] = useState(0);
+  const pointEditor = usePointEditor(result?.revision_id, pointMode && Boolean(result?.run.success));
+  const canEditPoints = Boolean(onApplyPointEdits && result?.run.success && result.revision_id);
+
+  useEffect(() => {
+    if (!result?.run.success) {
+      setPointMode(false);
+      setManipulating(false);
+    }
+  }, [result]);
+
+  const onPlotLayout = useCallback((next: PlotlyElement | null) => {
+    setGraph(next);
+    setLayoutTick((tick) => tick + 1);
+  }, []);
 
   const handleDownload = async (format: string, extension: string) => {
     if (!result?.revision_id || downloadingFormat) return;
@@ -77,10 +99,28 @@ export function PreviewCanvas({
         </h2>
         {result?.run.success && (
           <div className="preview-toolbar">
+            {canEditPoints && (
+              <button
+                className={`btn small ${pointMode ? "primary" : "secondary"}`}
+                onClick={() => {
+                  setPointMode(!pointMode);
+                  setManipulating(false);
+                }}
+                disabled={busy}
+                style={pointMode ? { background: "var(--primary-600)", color: "#fff", borderColor: "var(--primary-700)" } : {}}
+                title={zh ? "在图上直接拖动数据点来修正数据，图像随之更新（另存为新的数据版本，保留修改记录）" : "Drag data points on the figure to correct values (saved as a new dataset version with a log)"}
+              >
+                <span>✋</span>
+                <span>{zh ? (pointMode ? "正在修正数据点…" : "拖动数据点") : pointMode ? "Editing points…" : "Drag points"}</span>
+              </button>
+            )}
             {!isInteractive && (
               <button
                 className={`btn small ${manipulating ? "primary" : "secondary"}`}
-                onClick={() => setManipulating(!manipulating)}
+                onClick={() => {
+                  setManipulating(!manipulating);
+                  setPointMode(false);
+                }}
                 disabled={busy}
                 style={manipulating ? { background: "var(--primary-600)", color: "#fff", borderColor: "var(--primary-700)" } : {}}
                 title={zh ? "在图表上直接拖动参考线/坐标范围，代码自动相应调整" : "Drag reference lines and limits on the figure"}
@@ -163,8 +203,11 @@ export function PreviewCanvas({
         {result?.run.success && result.run.interactive ? (
           <div className="canvas-paper" style={{ width: "100%" }}>
             <Suspense fallback={<div className="loading-spinner" />}>
-              <LazyInteractivePlot figure={result.run.interactive} onRangesChange={setRanges} />
+              <LazyInteractivePlot figure={result.run.interactive} onRangesChange={setRanges} onLayout={onPlotLayout} />
             </Suspense>
+            {pointMode && graph && (
+              <PointOverlay editor={pointEditor} language={language} busy={busy} graph={graph} layoutTick={layoutTick} />
+            )}
           </div>
         ) : result?.run.success && result.run.image ? (
           <div className="canvas-paper" style={{ position: "relative" }}>
@@ -183,6 +226,7 @@ export function PreviewCanvas({
                 onClose={() => setManipulating(false)}
               />
             )}
+            {pointMode && <PointOverlay editor={pointEditor} language={language} busy={busy} />}
           </div>
         ) : (
           <div className="hint" style={{ textAlign: "center", maxWidth: "340px" }}>
@@ -196,6 +240,16 @@ export function PreviewCanvas({
           </div>
         )}
       </div>
+
+      {pointMode && onApplyPointEdits && result?.run.success && (
+        <PointEditPanel
+          editor={pointEditor}
+          language={language}
+          busy={busy}
+          onApply={onApplyPointEdits}
+          onClose={() => setPointMode(false)}
+        />
+      )}
 
       {result && !result.run.success && (
         <pre className="error" style={{ marginTop: "12px" }}>

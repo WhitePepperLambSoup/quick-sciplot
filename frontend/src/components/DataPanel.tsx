@@ -114,6 +114,18 @@ export function DataPanel({
                   title={zh ? "选中后可与其它文件多表合并" : "Select to combine with other files"}
                 />
                 <span className="dataset-file-name">{item.name || (zh ? "未命名文件" : "Unnamed file")}</span>
+                {item.provenance && (
+                  <span
+                    className="dataset-corrected-badge"
+                    title={
+                      zh
+                        ? `由“${item.provenance.root_name}”修正而来，共 ${item.provenance.edit_count} 处修改（原数据保留）。在数据工作台可查看修正记录。`
+                        : `Corrected from "${item.provenance.root_name}": ${item.provenance.edit_count} edit(s); the original is kept. See the workbench for the log.`
+                    }
+                  >
+                    ✎ {item.provenance.edit_count}
+                  </span>
+                )}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                 <span className="dataset-file-badge">

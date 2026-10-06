@@ -1,13 +1,17 @@
 import type {
   BatchItem,
+  CellEdit,
   CodeParameter,
   ColumnValues,
   ConnectionResult,
   CritiqueReport,
   DatasetInfo,
   DatasetPreview,
+  DatasetProvenance,
+  EditCellsResult,
   LLMConfig,
   PlotResult,
+  PointSetsResponse,
   Preset,
   RevisionDetail,
   RevisionSummary,
@@ -358,6 +362,23 @@ export function joinDatasets(input: {
   name?: string;
 }): Promise<DatasetInfo> {
   return postJson<DatasetInfo>("/datasets/join", input);
+}
+
+// ---------------------------------------------------- point / cell correction
+
+export function getRevisionPoints(revisionId: string): Promise<PointSetsResponse> {
+  return request<PointSetsResponse>(`/plots/revisions/${revisionId}/points`);
+}
+
+export function editCells(
+  datasetId: string,
+  input: { edits: CellEdit[]; note?: string; name?: string; code?: string; preset?: string },
+): Promise<EditCellsResult> {
+  return postJson<EditCellsResult>(`/datasets/${datasetId}/edit-cells`, input);
+}
+
+export function getDatasetEdits(datasetId: string): Promise<{ id: string; name: string; provenance: DatasetProvenance | null }> {
+  return request(`/datasets/${datasetId}/edits`);
 }
 
 // ------------------------------------------------------------ figure helpers

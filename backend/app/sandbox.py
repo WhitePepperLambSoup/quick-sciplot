@@ -241,6 +241,133 @@ matplotlib.rcParams["axes.unicode_minus"] = False
     epilogue = """
 import os as _os
 import sys as _sys
+
+
+def _qs_figure_points(_fig, _gca):
+    # Geometry of every axes in the saved (tight-cropped) image, plus the data
+    # marks drawn on them.  The backend maps the marks back to dataset rows so
+    # they can be dragged in the preview.
+    import math as _math
+    import numpy as _np
+    import matplotlib.ticker as _ticker
+    from matplotlib.collections import PathCollection as _PathCollection
+    from matplotlib.container import BarContainer as _BarContainer
+
+    _fig.canvas.draw()
+    _renderer = _fig.canvas.get_renderer()
+    try:
+        _pad = float(matplotlib.rcParams.get("savefig.pad_inches", 0.1))
+    except (TypeError, ValueError):
+        _pad = 0.1
+    _box = _fig.get_tightbbox(_renderer).padded(_pad)
+    _dpi = float(_fig.dpi)
+
+    def _image_point(_x, _y):
+        return (_x / _dpi - _box.x0) / _box.width, (_box.y1 - _y / _dpi) / _box.height
+
+    def _image_box(_ax):
+        _left, _top = _image_point(_ax.bbox.x0, _ax.bbox.y1)
+        _right, _bottom = _image_point(_ax.bbox.x1, _ax.bbox.y0)
+        return [_left, _top, _right - _left, _bottom - _top]
+
+    def _axis_info(_axis):
+        _info = {"scale": _axis.get_scale(), "kind": "num"}
+        _mapping = getattr(getattr(_axis, "units", None), "_mapping", None)
+        if _mapping:
+            _info["kind"] = "cat"
+            _info["labels"] = [[float(_v), str(_k)] for _k, _v in list(_mapping.items())[:2000]]
+            return _info
+        _converter = _axis.get_converter() if hasattr(_axis, "get_converter") else getattr(_axis, "converter", None)
+        if _converter is not None and "Date" in type(_converter).__name__:
+            _info["kind"] = "date"
+        elif isinstance(_axis.get_major_formatter(), _ticker.FixedFormatter):
+            _locs = [float(_l) for _l in _axis.get_majorticklocs()]
+            _texts = [_t.get_text() for _t in _axis.get_majorticklabels()]
+            if len(_locs) == len(_texts) and any(_texts):
+                _info["ticks"] = [[_l, _s] for _l, _s in zip(_locs, _texts)][:2000]
+        return _info
+
+    _limit_set = 2000
+    _limit_total = 5000
+    _total = 0
+    _axes = []
+    _sets = []
+    for _index, _ax in enumerate(_fig.axes):
+        _axes.append({
+            "box": _image_box(_ax),
+            "xlim": [float(_v) for _v in _ax.get_xlim()],
+            "ylim": [float(_v) for _v in _ax.get_ylim()],
+            "x": _axis_info(_ax.xaxis),
+            "y": _axis_info(_ax.yaxis),
+        })
+        if not _ax.get_visible() or _ax.name != "rectilinear":
+            continue
+        _marks = []
+        for _line in _ax.get_lines():
+            if _line.get_visible() and _line.get_transform() == _ax.transData:
+                _marks.append(("line", _line, _np.asarray(_line.get_xydata(), dtype=float)))
+        for _coll in _ax.collections:
+            if isinstance(_coll, _PathCollection) and _coll.get_visible() and _coll.get_offset_transform() == _ax.transData:
+                _offsets = _np.ma.filled(_np.ma.asarray(_coll.get_offsets(), dtype=float), _np.nan)
+                _marks.append(("scatter", _coll, _offsets))
+        for _kind, _artist, _xy in _marks:
+            _xy = _xy.reshape(-1, 2)
+            _keep = _np.flatnonzero(_np.isfinite(_xy).all(axis=1))
+            if _keep.size == 0 or _keep.size > _limit_set or _total + _keep.size > _limit_total:
+                continue
+            _total += int(_keep.size)
+            _sets.append({
+                "axes": _index,
+                "kind": _kind,
+                "label": str(_artist.get_label() or "")[:120],
+                "x": _xy[_keep, 0].tolist(),
+                "y": _xy[_keep, 1].tolist(),
+            })
+        for _container in _ax.containers:
+            if not isinstance(_container, _BarContainer):
+                continue
+            _horizontal = getattr(_container, "orientation", None) == "horizontal"
+            _datavalues = getattr(_container, "datavalues", None)
+            _pos, _values, _bases = [], [], []
+            for _i, _patch in enumerate(_container.patches):
+                if not _patch.get_visible():
+                    continue
+                if _horizontal:
+                    _p, _b, _v = _patch.get_y() + _patch.get_height() / 2, _patch.get_x(), _patch.get_width()
+                else:
+                    _p, _b, _v = _patch.get_x() + _patch.get_width() / 2, _patch.get_y(), _patch.get_height()
+                if _datavalues is not None and _i < len(_datavalues):
+                    try:
+                        _v = float(_datavalues[_i])
+                    except (TypeError, ValueError):
+                        pass
+                _p, _b, _v = float(_p), float(_b), float(_v)
+                if _math.isfinite(_p) and _math.isfinite(_b) and _math.isfinite(_v):
+                    _pos.append(_p)
+                    _bases.append(_b)
+                    _values.append(_v)
+            if not _pos or len(_pos) > _limit_set or _total + len(_pos) > _limit_total:
+                continue
+            _total += len(_pos)
+            _sets.append({
+                "axes": _index,
+                "kind": "bar",
+                "orientation": "h" if _horizontal else "v",
+                "label": str(_container.get_label() or "")[:120],
+                "pos": _pos,
+                "value": _values,
+                "base": _bases,
+            })
+    return {
+        "image_box": _image_box(_gca),
+        "xscale": _gca.get_xscale(),
+        "yscale": _gca.get_yscale(),
+        "gca": _fig.axes.index(_gca) if _gca in _fig.axes else 0,
+        "axes": _axes,
+        "sets": _sets,
+    }
+
+
 _interactive_fig = globals().get("fig")
 if _interactive_fig is not None and hasattr(_interactive_fig, "to_plotly_json"):
     try:
@@ -271,6 +398,10 @@ else:
             "ylim": [float(_ax.get_ylim()[0]), float(_ax.get_ylim()[1])],
             "bbox": [float(_pos.x0), float(_pos.y0), float(_pos.width), float(_pos.height)],
         }
+        try:
+            _meta_data.update(_qs_figure_points(_fig, _ax))
+        except Exception as _pexc:
+            print(f"export points failed: {_pexc}", file=_sys.stderr)
         with open(_os.environ["OUTPUT_META"], "w", encoding="utf-8") as _mf:
             _json.dump(_meta_data, _mf)
     except Exception as _mexc:
@@ -482,7 +613,12 @@ def run_plot_code(
         meta_path = output_paths["meta"]
         if meta_path.exists():
             try:
-                result["meta"] = json.loads(meta_path.read_text(encoding="utf-8"))
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(meta, dict):
+                    # Data marks can be large; they stay on disk and are served
+                    # on demand by the point-editing endpoint.
+                    meta.pop("sets", None)
+                    result["meta"] = meta
             except Exception:
                 pass
         interactive_path = output_paths["plotly"]

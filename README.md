@@ -13,7 +13,8 @@ Import one or more data files, describe the figure in natural language, and refi
 **Data**
 
 - Import CSV, TSV, TXT (tab, comma or semicolon detected automatically), Excel and JSON by button, Ctrl+O, or drag and drop.
-- **Data workbench**: page through the raw rows, filter, reshape wide tables to long, select or sort columns, drop missing values, and join two datasets on explicit keys. Every step creates a new dataset; the original is kept.
+- **Data workbench**: page through the raw rows (double-click a cell to correct it), filter, reshape wide tables to long, select or sort columns, drop missing values, and join two datasets on explicit keys. Every step creates a new dataset; the original is kept.
+- **Drag data points to correct data**: in **Drag points** mode, every mark that plots raw values (scatter points, line vertices, one-bar-per-row bars, strip/jitter points) gets a handle bound to its dataset row, on Matplotlib and Plotly figures, linear or log axes, and category or date x axes. Drag one point or a box selection, lock the direction, nudge with the arrow keys, type an exact value or mark it missing, and undo/redo before applying. Applying saves a new dataset version and re-renders the figure; the original is never overwritten, every changed cell (old/new value, time, reason) is listed under **Corrections**, and project bundles include `data_corrections.csv`.
 - Combine several files by rows with a `source_file` provenance column.
 
 **Figures**

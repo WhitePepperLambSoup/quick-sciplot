@@ -114,6 +114,13 @@ export function ChatPanel({
   };
 
   const suggestions = generateSuggestions();
+  const chatRef = useRef<HTMLDivElement>(null);
+  // The list scrolls inside a height-capped box; keep the newest message in view.
+  // (scrollTop, not scrollIntoView, so the window itself never jumps.)
+  useEffect(() => {
+    const element = chatRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [messages.length, Boolean(stream)]);
 
   return (
     <section className="panel right">
@@ -129,7 +136,7 @@ export function ChatPanel({
         )}
       </div>
 
-      <div className="chat">
+      <div className="chat" ref={chatRef}>
         {messages.length === 0 && dataset && (
           <div className="chat-welcome">
             <p className="welcome-title">

@@ -88,6 +88,20 @@ def init_db() -> None:
             conn.execute("ALTER TABLE revisions ADD COLUMN label TEXT NOT NULL DEFAULT ''")
         if "starred" not in existing:
             conn.execute("ALTER TABLE revisions ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
+        dataset_columns = {row["name"] for row in conn.execute("PRAGMA table_info(datasets)").fetchall()}
+        if "provenance_json" not in dataset_columns:
+            # Where a corrected dataset came from and every cell edit (0.3.0).
+            conn.execute("ALTER TABLE datasets ADD COLUMN provenance_json TEXT NOT NULL DEFAULT ''")
+
+
+def _provenance(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return _json_safe(value) if isinstance(value, dict) else None
 
 
 MAX_REVISION_LABEL = 80
@@ -120,40 +134,50 @@ def save_dataset(dataset: dict) -> None:
     path = safe_dataset_path(settings.data_dir, dataset.get("path", ""))
     if path is None:
         raise ValueError("数据集路径必须是 data_dir 下的普通 CSV 文件")
+    provenance = dataset.get("provenance")
     with _connect() as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO datasets(id, name, path, summary_json)
-            VALUES (?, ?, ?, ?)
+            INSERT OR REPLACE INTO datasets(id, name, path, summary_json, provenance_json)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 dataset["id"],
                 dataset.get("name", ""),
                 str(path),
                 json.dumps(dataset.get("summary", {}), ensure_ascii=False),
+                json.dumps(_json_safe(provenance), ensure_ascii=False) if isinstance(provenance, dict) else "",
             ),
         )
 
 
 def get_dataset(dataset_id: str) -> dict | None:
     with _connect() as conn:
-        row = conn.execute("SELECT id, name, path, summary_json FROM datasets WHERE id = ?", (dataset_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id, name, path, summary_json, provenance_json FROM datasets WHERE id = ?", (dataset_id,)
+        ).fetchone()
     if row is None:
         return None
     path = safe_dataset_path(settings.data_dir, row["path"])
     if path is None:
         return None
-    return {
+    dataset = {
         "id": row["id"],
         "name": row["name"],
         "path": str(path),
         "summary": _json_safe(json.loads(row["summary_json"])),
     }
+    provenance = _provenance(row["provenance_json"])
+    if provenance:
+        dataset["provenance"] = provenance
+    return dataset
 
 
 def list_datasets(*, include_path: bool = False) -> list[dict]:
     with _connect() as conn:
-        rows = conn.execute("SELECT id, name, path, summary_json FROM datasets ORDER BY created_at DESC").fetchall()
+        rows = conn.execute(
+            "SELECT id, name, path, summary_json, provenance_json FROM datasets ORDER BY created_at DESC"
+        ).fetchall()
     datasets = []
     for row in rows:
         path = safe_dataset_path(settings.data_dir, row["path"])
@@ -167,6 +191,9 @@ def list_datasets(*, include_path: bool = False) -> list[dict]:
             }
             if include_path:
                 item["path"] = str(path)
+            provenance = _provenance(row["provenance_json"])
+            if provenance:
+                item["provenance"] = provenance
             datasets.append(item)
         except Exception:
             continue

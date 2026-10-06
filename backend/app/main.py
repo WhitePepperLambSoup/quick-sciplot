@@ -29,6 +29,7 @@ from . import (
     figure_mimic,
     llm,
     plot_templates,
+    point_editor,
     preset_registry,
     sandbox,
     stats_annotator,
@@ -214,11 +215,15 @@ def _get_dataset(dataset_id: str) -> dict:
 
 def _public_dataset(dataset: dict) -> dict:
     """Remove internal filesystem paths before returning dataset metadata."""
-    return {
+    public = {
         "id": dataset["id"],
         "name": dataset.get("name", ""),
         "summary": dataset.get("summary", {}),
     }
+    provenance = point_editor.public_provenance(dataset.get("provenance"))
+    if provenance:
+        public["provenance"] = provenance
+    return public
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -391,8 +396,7 @@ def delete_dataset(dataset_id: str, _token: str = Depends(verify_session_token))
 
 @app.get("/api/datasets/{dataset_id}", summary="获取数据集摘要")
 def get_dataset(dataset_id: str, _token: str = Depends(verify_session_token)):
-    ds = _get_dataset(dataset_id)
-    return {"id": ds["id"], "summary": ds["summary"]}
+    return _public_dataset(_get_dataset(dataset_id))
 
 
 @app.get("/api/presets", summary="获取可用绘图预设")
@@ -570,7 +574,7 @@ def mimic_plot(req: MimicRequest, _token: str = Depends(verify_session_token)):
     return _execute_and_decorate(code, ds, preset, "mimic")
 
 
-@app.post("/api/plots/interactive-adjust", summary="交互式图像修正：直接拖拽图表中点或线逆向更新代码并重新渲染")
+@app.post("/api/plots/interactive-adjust", summary="交互式图像修正：拖拽参考线或坐标范围，逆向更新代码并重新渲染")
 def interactive_adjust_plot(req: InteractiveAdjustRequest, _token: str = Depends(verify_session_token)):
     ds = _get_dataset(req.dataset_id)
     preset = _normalize_preset(req.preset)
@@ -647,7 +651,9 @@ def export_plot_revision(revision_id: str, format_name: str, _token: str = Depen
         )
     if format_name == "bundle":
         ds = _get_dataset(revision["dataset_id"])
-        payload = exporter.project_bundle(revision, Path(ds["path"]), ds.get("name") or "data.csv", output_dir)
+        payload = exporter.project_bundle(
+            revision, Path(ds["path"]), ds.get("name") or "data.csv", output_dir, provenance=ds.get("provenance")
+        )
         return Response(
             payload,
             media_type="application/zip",
@@ -701,7 +707,7 @@ class PlotCancelled(Exception):
 
 # Operations whose code comes from the user or a deterministic transform: a
 # failure is reported as-is instead of being sent to the model for repair.
-NO_REPAIR_OPERATIONS = {"run", "parameter", "compose", "stats", "regression", "fit-journal", "template", "batch"}
+NO_REPAIR_OPERATIONS = {"run", "parameter", "compose", "stats", "regression", "fit-journal", "template", "batch", "data-edit"}
 
 
 def _execute_and_decorate(
@@ -941,6 +947,76 @@ def join_datasets(req: JoinRequest, _token: str = Depends(verify_session_token))
         raise _data_error(exc) from exc
     name = (req.name or "").strip() or f"{left.get('name') or 'left'} ⋈ {right.get('name') or 'right'}"
     return _store_derived_dataset(frame, name)
+
+
+# ------------------------------------------------------- point / cell editing
+
+
+class CellEdit(BaseModel):
+    row: int = Field(..., ge=0)
+    column: str = Field(..., max_length=256)
+    value: float | str | None = None
+
+
+class EditCellsRequest(BaseModel):
+    edits: list[CellEdit] = Field(..., min_length=1, max_length=point_editor.MAX_EDITS)
+    note: str = Field("", max_length=500)
+    name: str | None = Field(None, max_length=200)
+    # When given, the figure is re-rendered with the corrected data.
+    code: str | None = Field(None, max_length=100000)
+    preset: str | None = Field(None, max_length=128)
+
+
+def _corrected_name(parent: dict) -> str:
+    provenance = parent.get("provenance") if isinstance(parent.get("provenance"), dict) else {}
+    base = provenance.get("root_name") or parent.get("name") or "数据集"
+    return f"{base}（修正 {int(provenance.get('step', 0)) + 1}）"
+
+
+@app.get("/api/plots/revisions/{revision_id}/points", summary="图中可拖动修正的数据点及其对应的数据行")
+def revision_points(revision_id: str, _token: str = Depends(verify_session_token)):
+    revision = database.get_revision(revision_id)
+    if revision is None or not revision["success"]:
+        raise HTTPException(status_code=404, detail="绘图版本不存在")
+    ds = _get_dataset(revision["dataset_id"])
+    output_dir = _revision_output_dir(revision)
+    try:
+        frame = data_loader.load_dataframe(ds["path"])
+    except data_loader.DataError as exc:
+        raise _data_error(exc) from exc
+    result = point_editor.point_sets_for_output(output_dir, frame, revision["code"])
+    result.update({"revision_id": revision_id, "dataset_id": ds["id"], "rows": int(frame.shape[0])})
+    return result
+
+
+@app.post("/api/datasets/{dataset_id}/edit-cells", summary="修正单元格（含图上拖动的数据点），另存为带修改记录的新数据集版本")
+def edit_dataset_cells(dataset_id: str, req: EditCellsRequest, _token: str = Depends(verify_session_token)):
+    parent = _get_dataset(dataset_id)
+    preset = _normalize_preset(req.preset) if req.code else None
+    try:
+        frame = data_loader.load_dataframe(parent["path"])
+        corrected, log = point_editor.apply_cell_edits(frame, [edit.model_dump() for edit in req.edits])
+        created = data_loader.create_dataset(settings.data_dir, corrected, (req.name or "").strip() or _corrected_name(parent))
+    except data_loader.DataError as exc:
+        raise _data_error(exc) from exc
+    created["provenance"] = point_editor.build_provenance(parent, log, " ".join(req.note.split()))
+    DATASETS[created["id"]] = created
+    database.save_dataset(created)
+    response: dict = {"dataset": _public_dataset(created), "edits": log}
+    if req.code:
+        try:
+            response["plot"] = _execute_and_decorate(req.code, created, preset, "data-edit")
+        except HTTPException as exc:
+            # The corrected dataset is saved either way; report the render problem.
+            response["plot_error"] = str(exc.detail)
+    return response
+
+
+@app.get("/api/datasets/{dataset_id}/edits", summary="数据集的修正记录（来源与每个单元格的原值/新值）")
+def dataset_edits(dataset_id: str, _token: str = Depends(verify_session_token)):
+    ds = _get_dataset(dataset_id)
+    provenance = ds.get("provenance") if isinstance(ds.get("provenance"), dict) else None
+    return {"id": ds["id"], "name": ds.get("name", ""), "provenance": provenance}
 
 
 # ------------------------------------------------------------ figure helpers

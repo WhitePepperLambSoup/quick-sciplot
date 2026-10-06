@@ -17,10 +17,103 @@ export interface DataSummary {
   head: Record<string, unknown>[];
 }
 
+export interface DatasetProvenanceSummary {
+  kind: "cell-edits";
+  parent_id: string;
+  parent_name: string;
+  root_id: string;
+  root_name: string;
+  step: number;
+  edit_count: number;
+}
+
+export interface CellEditLogEntry {
+  row: number;
+  column: string;
+  old: unknown;
+  new: unknown;
+  step?: number;
+  at?: string;
+  note?: string;
+}
+
+export interface DatasetProvenance extends DatasetProvenanceSummary {
+  edits: CellEditLogEntry[];
+  truncated: boolean;
+}
+
 export interface DatasetInfo {
   id: string;
   name?: string;
   summary: DataSummary;
+  /** Present on datasets created by correcting cells of another dataset. */
+  provenance?: DatasetProvenanceSummary;
+}
+
+export interface CellEdit {
+  row: number;
+  column: string;
+  /** null clears the cell (missing value). */
+  value: number | string | null;
+}
+
+export interface EditCellsResult {
+  dataset: DatasetInfo;
+  edits: CellEditLogEntry[];
+  plot?: PlotResult;
+  plot_error?: string;
+}
+
+export interface PointAxisSpec {
+  column: string | null;
+  kind: "num" | "cat" | "date";
+  scale: string;
+  editable: boolean;
+  index?: boolean;
+}
+
+export interface PointSet {
+  id: string;
+  kind: "line" | "scatter" | "bar";
+  label: string;
+  /** Matplotlib: index into ``axes``. */
+  axes?: number;
+  /** Plotly: trace index and axis references ("x", "x2", "y", ...). */
+  trace?: number;
+  xref?: string;
+  yref?: string;
+  x: PointAxisSpec;
+  y: PointAxisSpec;
+  rows: number[];
+  /** Positions in axis units (Matplotlib) or the trace's own values (Plotly). */
+  xs: (number | string)[];
+  ys: (number | string)[];
+  /** Readable values for category/date axes (Matplotlib positions are not the data). */
+  x_display?: string[];
+  y_display?: string[];
+  orientation?: "v" | "h";
+  bases?: number[];
+  ambiguous: number;
+}
+
+export interface AxisGeometry {
+  /** [left, top, width, height] as fractions of the saved image. */
+  box: [number, number, number, number];
+  xlim: [number, number];
+  ylim: [number, number];
+  x: { kind: string; scale: string };
+  y: { kind: string; scale: string };
+}
+
+export interface PointSetsResponse {
+  engine: "matplotlib" | "plotly" | "none";
+  axes: (AxisGeometry | null)[];
+  sets: PointSet[];
+  unmatched: number;
+  revision_id: string;
+  dataset_id: string;
+  rows: number;
+  error?: string;
 }
 
 export interface StatementCard {
@@ -82,6 +175,10 @@ export interface PlotMeta {
   xlim: [number, number];
   ylim: [number, number];
   bbox: [number, number, number, number]; // [left, bottom, width, height] normalized
+  /** Current axes as [left, top, width, height] fractions of the saved (tight-cropped) image. */
+  image_box?: [number, number, number, number];
+  xscale?: string;
+  yscale?: string;
 }
 
 export interface InspectedElements {

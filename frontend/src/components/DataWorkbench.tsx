@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { joinDatasets, previewDataset, transformDataset } from "../api";
-import type { DatasetInfo, DatasetPreview, TransformOperation } from "../types";
+import { getDatasetEdits, joinDatasets, previewDataset, transformDataset } from "../api";
+import type { CellEdit, DatasetInfo, DatasetPreview, DatasetProvenance, TransformOperation } from "../types";
 import { useEscape } from "../utils";
 import type { Language } from "./ParameterInput";
 
@@ -8,11 +8,28 @@ interface DataWorkbenchProps {
   language: Language;
   dataset: DatasetInfo;
   datasets: DatasetInfo[];
+  busy?: boolean;
   onClose: () => void;
   onCreated: (dataset: DatasetInfo) => void;
+  /** Save corrected cells as a new dataset version; resolves true on success. */
+  onSaveEdits?: (edits: CellEdit[], note: string) => Promise<boolean>;
 }
 
-type Tab = "preview" | "transform" | "join";
+type Tab = "preview" | "transform" | "join" | "corrections";
+
+interface StagedEdit {
+  row: number;
+  column: string;
+  old: unknown;
+  value: number | string | null;
+}
+
+const cellId = (row: number, column: string) => `${row}\u0001${column}`;
+
+function isNumericDtype(dtype: string | undefined): boolean {
+  return Boolean(dtype && /^(u?int|float)/i.test(dtype));
+}
+
 const PAGE_SIZE = 100;
 
 const OPERATORS: { value: string; zh: string; en: string; needsValue: boolean }[] = [
@@ -76,13 +93,68 @@ function ColumnChecklist({
   );
 }
 
-export function DataWorkbench({ language, dataset, datasets, onClose, onCreated }: DataWorkbenchProps) {
+export function DataWorkbench({ language, dataset, datasets, busy: appBusy = false, onClose, onCreated, onSaveEdits }: DataWorkbenchProps) {
   const zh = language === "zh";
   const [tab, setTab] = useState<Tab>("preview");
   const [preview, setPreview] = useState<DatasetPreview | null>(null);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [localBusy, setBusy] = useState(false);
+  const busy = localBusy || appBusy;
+  const [staged, setStaged] = useState<Map<string, StagedEdit>>(new Map());
+  const [editing, setEditing] = useState<{ row: number; column: string; text: string } | null>(null);
+  const [editNote, setEditNote] = useState("");
+  const [provenance, setProvenance] = useState<DatasetProvenance | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (tab !== "corrections" || provenance !== undefined) return;
+    getDatasetEdits(dataset.id)
+      .then((data) => setProvenance(data.provenance))
+      .catch((err) => {
+        setProvenance(null);
+        setError(String(err));
+      });
+  }, [tab, dataset.id, provenance]);
+
+  const stageEdit = (row: number, column: string, text: string, old: unknown) => {
+    const trimmed = text.trim();
+    let value: number | string | null;
+    if (isNumericDtype(preview?.dtypes[column])) {
+      if (trimmed === "") value = null;
+      else {
+        const parsed = Number(trimmed);
+        if (!Number.isFinite(parsed)) {
+          setError(zh ? `列 ${column} 是数值列，请输入数字（留空表示缺失）` : `${column} is numeric: enter a number (empty = missing)`);
+          return;
+        }
+        value = parsed;
+      }
+    } else {
+      value = trimmed === "" ? null : text;
+    }
+    setError(null);
+    setStaged((current) => {
+      const next = new Map(current);
+      const unchanged = (value === null && old === null) || (value !== null && old !== null && String(value) === String(old));
+      if (unchanged) next.delete(cellId(row, column));
+      else next.set(cellId(row, column), { row, column, old, value });
+      return next;
+    });
+  };
+
+  const saveEdits = async () => {
+    if (!onSaveEdits || staged.size === 0) return;
+    setBusy(true);
+    try {
+      const ok = await onSaveEdits(
+        [...staged.values()].map(({ row, column, value }) => ({ row, column, value })),
+        editNote.trim(),
+      );
+      if (ok) onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
   const [error, setError] = useState<string | null>(null);
   const [operations, setOperations] = useState<TransformOperation[]>([]);
   const [newName, setNewName] = useState("");
@@ -90,7 +162,12 @@ export function DataWorkbench({ language, dataset, datasets, onClose, onCreated 
   const [rightId, setRightId] = useState(others[0]?.id || "");
   const [keyPairs, setKeyPairs] = useState<[string, string][]>([["", ""]]);
   const [how, setHow] = useState("inner");
-  useEscape(onClose, !busy);
+  // Closing with unsaved cell corrections asks first.
+  const requestClose = () => {
+    if (staged.size > 0 && !window.confirm(zh ? `放弃 ${staged.size} 处未保存的修正？` : `Discard ${staged.size} unsaved correction(s)?`)) return;
+    onClose();
+  };
+  useEscape(requestClose, !busy && !editing);
 
   const baseColumns = useMemo(() => columnNames(dataset), [dataset]);
   const rightDataset = others.find((item) => item.id === rightId);
@@ -177,19 +254,20 @@ export function DataWorkbench({ language, dataset, datasets, onClose, onCreated 
     : { filter: "Filter rows", melt: "Wide → long", select: "Select columns", dropna: "Drop missing", sort: "Sort" };
 
   return (
-    <div className="modal-backdrop" onClick={() => !busy && onClose()}>
+    <div className="modal-backdrop" onClick={() => !busy && requestClose()}>
       <div className="modal-dialog data-workbench" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>{zh ? `🗂️ 数据工作台 · ${dataset.name || "未命名"}` : `🗂️ Data workbench · ${dataset.name || "Unnamed"}`}</h3>
-          <button className="btn-icon" onClick={onClose} disabled={busy}>✕</button>
+          <button className="btn-icon" onClick={requestClose} disabled={busy}>✕</button>
         </div>
 
         <div className="journal-tabs">
-          {(["preview", "transform", "join"] as Tab[]).map((key) => (
+          {(["preview", "transform", "join", "corrections"] as Tab[]).map((key) => (
             <button key={key} type="button" className={`journal-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
               {key === "preview" && (zh ? "数据预览" : "Preview")}
               {key === "transform" && (zh ? "数据处理" : "Transform")}
               {key === "join" && (zh ? "按键连接" : "Join")}
+              {key === "corrections" && (zh ? `修正记录${dataset.provenance ? `（${dataset.provenance.edit_count}）` : ""}` : `Corrections${dataset.provenance ? ` (${dataset.provenance.edit_count})` : ""}`)}
             </button>
           ))}
         </div>
@@ -230,16 +308,65 @@ export function DataWorkbench({ language, dataset, datasets, onClose, onCreated 
                       </tr>
                     </thead>
                     <tbody>
-                      {preview.rows.map((row, index) => (
-                        <tr key={preview.offset + index}>
-                          <td className="row-index">{preview.offset + index + 1}</td>
-                          {preview.columns.map((column) => (
-                            <td key={column} className={row[column] === null ? "cell-null" : ""}>
-                              {row[column] === null ? "—" : formatCell(row[column])}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
+                      {preview.rows.map((row, index) => {
+                        const rowNumber = preview.offset + index;
+                        return (
+                          <tr key={rowNumber}>
+                            <td className="row-index">{rowNumber + 1}</td>
+                            {preview.columns.map((column) => {
+                              const original = row[column] ?? null;
+                              const edit = staged.get(cellId(rowNumber, column));
+                              if (editing && editing.row === rowNumber && editing.column === column) {
+                                return (
+                                  <td key={column} className="cell-editing">
+                                    <input
+                                      autoFocus
+                                      value={editing.text}
+                                      onChange={(e) => setEditing({ ...editing, text: e.target.value })}
+                                      onBlur={() => {
+                                        stageEdit(rowNumber, column, editing.text, original);
+                                        setEditing(null);
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          stageEdit(rowNumber, column, editing.text, original);
+                                          setEditing(null);
+                                        } else if (e.key === "Escape") {
+                                          e.stopPropagation();
+                                          setEditing(null);
+                                        }
+                                      }}
+                                    />
+                                  </td>
+                                );
+                              }
+                              const shown = edit ? edit.value : original;
+                              return (
+                                <td
+                                  key={column}
+                                  className={`${shown === null ? "cell-null" : ""}${edit ? " cell-edited" : ""}${onSaveEdits ? " cell-editable" : ""}`}
+                                  title={
+                                    edit
+                                      ? zh
+                                        ? `原值：${original === null ? "缺失" : formatCell(original)}`
+                                        : `Was: ${original === null ? "missing" : formatCell(original)}`
+                                      : onSaveEdits
+                                      ? zh
+                                        ? "双击修改"
+                                        : "Double-click to edit"
+                                      : undefined
+                                  }
+                                  onDoubleClick={() =>
+                                    onSaveEdits && !busy && setEditing({ row: rowNumber, column, text: shown === null ? "" : String(shown) })
+                                  }
+                                >
+                                  {shown === null ? "—" : formatCell(shown)}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}
@@ -377,7 +504,85 @@ export function DataWorkbench({ language, dataset, datasets, onClose, onCreated 
             </div>
           )}
 
-          {tab !== "preview" && (
+          {tab === "preview" && onSaveEdits && (
+            <div className="cell-edit-bar">
+              <span>
+                {staged.size > 0
+                  ? zh
+                    ? `已修改 ${staged.size} 个单元格（黄色）。保存后生成新的数据集版本，原数据保留，并记录每一处修改。`
+                    : `${staged.size} cell(s) changed (yellow). Saving creates a new dataset version; the original is kept and every change is logged.`
+                  : zh
+                  ? "双击单元格可修正数据（数值列留空表示缺失）。"
+                  : "Double-click a cell to correct it (empty numeric cell = missing)."}
+              </span>
+              {staged.size > 0 && (
+                <>
+                  <input
+                    value={editNote}
+                    maxLength={500}
+                    onChange={(e) => setEditNote(e.target.value)}
+                    placeholder={zh ? "修改原因（可选）" : "Reason (optional)"}
+                  />
+                  <button className="btn-link" type="button" onClick={() => setStaged(new Map())} disabled={busy}>
+                    {zh ? "放弃修改" : "Discard"}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {tab === "corrections" && (
+            <div className="corrections-pane">
+              {provenance === undefined && <div className="loading-spinner" />}
+              {provenance === null && (
+                <p className="hint">
+                  {zh
+                    ? "这是原始数据集，没有修正记录。在图上拖动数据点或在“数据预览”里双击单元格修正后，会生成带修正记录的新版本。"
+                    : "This is an original dataset with no corrections. Dragging points on the figure or editing cells in Preview creates a new version with a log."}
+                </p>
+              )}
+              {provenance && (
+                <>
+                  <p className="modal-desc">
+                    {zh
+                      ? `由“${provenance.root_name}”经过 ${provenance.step} 次修正得到，共 ${provenance.edit_count} 处修改；上一版本：“${provenance.parent_name}”。原始数据集未被改动。`
+                      : `Derived from "${provenance.root_name}" in ${provenance.step} correction step(s), ${provenance.edit_count} edit(s); previous version: "${provenance.parent_name}". The original dataset is unchanged.`}
+                    {provenance.truncated && (zh ? "（仅显示最近的记录）" : " (only the latest entries are kept)")}
+                  </p>
+                  <div className="preview-table-wrap">
+                    <table className="preview-table corrections-table">
+                      <thead>
+                        <tr>
+                          <th>{zh ? "步骤" : "Step"}</th>
+                          <th>{zh ? "行" : "Row"}</th>
+                          <th>{zh ? "列" : "Column"}</th>
+                          <th>{zh ? "原值" : "Old"}</th>
+                          <th>{zh ? "新值" : "New"}</th>
+                          <th>{zh ? "时间" : "Time"}</th>
+                          <th>{zh ? "原因" : "Reason"}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {provenance.edits.map((entry, index) => (
+                          <tr key={index}>
+                            <td>{entry.step}</td>
+                            <td>{entry.row + 1}</td>
+                            <td>{entry.column}</td>
+                            <td className={entry.old === null ? "cell-null" : ""}>{entry.old === null ? "—" : formatCell(entry.old)}</td>
+                            <td className={entry.new === null ? "cell-null" : "cell-edited"}>{entry.new === null ? "—" : formatCell(entry.new)}</td>
+                            <td>{entry.at ? new Date(entry.at).toLocaleString() : ""}</td>
+                            <td>{entry.note || ""}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {(tab === "transform" || tab === "join") && (
             <div className="form-group">
               <label>{zh ? "新数据集名称（可选）" : "New dataset name (optional)"}</label>
               <input value={newName} onChange={(e) => setNewName(e.target.value)} maxLength={200} />
@@ -388,7 +593,12 @@ export function DataWorkbench({ language, dataset, datasets, onClose, onCreated 
         </div>
 
         <div className="modal-footer">
-          <button className="btn secondary" onClick={onClose} disabled={busy}>{zh ? "关闭" : "Close"}</button>
+          <button className="btn secondary" onClick={requestClose} disabled={busy}>{zh ? "关闭" : "Close"}</button>
+          {tab === "preview" && onSaveEdits && staged.size > 0 && (
+            <button className="btn" onClick={() => void saveEdits()} disabled={busy}>
+              {busy ? (zh ? "保存中…" : "Saving…") : zh ? `保存 ${staged.size} 处修正为新版本` : `Save ${staged.size} correction(s) as a new version`}
+            </button>
+          )}
           {tab === "transform" && (
             <button className="btn" onClick={applyTransform} disabled={busy || operations.length === 0}>
               {busy ? (zh ? "处理中…" : "Working…") : zh ? "生成新数据集" : "Create dataset"}

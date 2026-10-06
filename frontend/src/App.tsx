@@ -4,6 +4,7 @@ import {
   combineDatasets,
   critiquePlot,
   deleteDataset,
+  editCells,
   getConfig,
   getSystemStatus,
   interactiveAdjustPlot,
@@ -34,7 +35,9 @@ import { SetupWizard } from "./components/SetupWizard";
 import { StatsModal } from "./components/StatsModal";
 import { TemplateGallery } from "./components/TemplateGallery";
 import { ToastContainer, type ToastMessage } from "./components/Toast";
+import { formatValue } from "./components/PointEditor";
 import type {
+  CellEdit,
   ChatMessage,
   CodeParameter,
   DatasetInfo,
@@ -476,6 +479,77 @@ export default function App() {
     );
   };
 
+  /** Switch back to the dataset a correction was made from and re-render there. */
+  const revertCorrection = async (parent: DatasetInfo, code: string, preset: string) => {
+    setBusy(true);
+    try {
+      setDataset(parent);
+      setSelectedDatasetIds([parent.id]);
+      const res = await runCode(parent.id, code, preset);
+      applyPlotResult(
+        res,
+        parent.id,
+        zh ? `↶ 已撤销数据修正，回到“${parent.name || "原数据"}”（修正版仍保留在数据集列表中，可删除）` : `↶ Correction undone; back to "${parent.name || "original"}" (the corrected version stays in the list)`,
+      );
+    } catch (e) {
+      addToast("error", errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Save cell corrections of ``parent`` as a new dataset version.  When the
+   * figure on screen was drawn from ``parent`` it is re-rendered with the
+   * corrected data; otherwise the corrected dataset simply becomes active.
+   */
+  const applyCellCorrections = async (parent: DatasetInfo, edits: CellEdit[], note: string): Promise<boolean> => {
+    if (busy) return false;
+    const code = result?.run.success && dataset?.id === parent.id ? result.code : undefined;
+    const preset = selectedPreset;
+    setBusy(true);
+    try {
+      const res = await editCells(parent.id, { edits, note: note || undefined, code, preset });
+      const corrected = res.dataset;
+      setDatasets((current) => [...current, corrected]);
+      setSelectedDatasetIds([corrected.id]);
+      if (code) setDataset(corrected);
+      const preview = res.edits
+        .slice(0, 4)
+        .map((edit) =>
+          zh
+            ? `第 ${edit.row + 1} 行 ${edit.column}：${formatValue(edit.old as number | null)} → ${formatValue(edit.new as number | null)}`
+            : `row ${edit.row + 1} ${edit.column}: ${formatValue(edit.old as number | null, false)} → ${formatValue(edit.new as number | null, false)}`,
+        )
+        .join(zh ? "；" : "; ");
+      const more = res.edits.length > 4 ? (zh ? ` 等 ${res.edits.length} 处` : ` and ${res.edits.length - 4} more`) : "";
+      const text = zh
+        ? `✎ 已修正 ${res.edits.length} 处数据（${preview}${more}），另存为“${corrected.name}”。原数据保留，修正记录可在数据工作台查看。`
+        : `✎ Corrected ${res.edits.length} value(s) (${preview}${more}) and saved as "${corrected.name}". The original is kept; see the workbench for the log.`;
+      if (!code) {
+        activateDataset(corrected, text);
+        addToast("success", text);
+        return true;
+      }
+      if (res.plot) {
+        applyPlotResult(res.plot, corrected.id, text, zh ? "修正后的数据渲染失败" : "Rendering the corrected data failed");
+      } else {
+        pushMessage({ role: "assistant", content: `${text}\n${res.plot_error || ""}`, error: Boolean(res.plot_error) });
+        addToast("warning", res.plot_error || text);
+      }
+      addToast("info", zh ? "可以撤销这次数据修正" : "You can undo this correction", zh ? "数据已修正" : "Data corrected", {
+        duration: 20000,
+        action: { label: zh ? "撤销" : "Undo", onClick: () => void revertCorrection(parent, code, preset) },
+      });
+      return true;
+    } catch (e) {
+      addToast("error", errorText(e), zh ? "保存修正失败" : "Saving the correction failed");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleRunCritic = async (useAi: boolean) => {
     if (!result?.revision_id || busy) return;
     setBusy(true);
@@ -592,6 +666,7 @@ export default function App() {
           onOpenStatsModal={() => setStatsOpen(true)}
           onOpenComplianceModal={() => setComplianceOpen(true)}
           onInteractiveAdjust={handleInteractiveAdjust}
+          onApplyPointEdits={(edits, note) => (dataset ? applyCellCorrections(dataset, edits, note) : Promise.resolve(false))}
         />
 
         <ChatPanel
@@ -746,6 +821,8 @@ export default function App() {
           language={language}
           dataset={workbenchDataset}
           datasets={datasets}
+          busy={busy}
+          onSaveEdits={(edits, note) => applyCellCorrections(workbenchDataset, edits, note)}
           onClose={() => setWorkbenchDataset(null)}
           onCreated={(created) => {
             setDatasets((current) => [...current, created]);

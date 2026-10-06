@@ -84,46 +84,55 @@ export function InteractiveManipulator({
     }
   }, [meta?.xlim]);
 
-  // 计算 Matplotlib 轴区在当前容器中的绝对像素几何 [plotLeft, plotTop, plotWidth, plotHeight]
+  // 计算 Matplotlib 轴区在当前容器中的绝对像素几何 [plotLeft, plotTop, plotWidth, plotHeight]。
+  // 优先使用渲染器导出的“裁边后图片”坐标（image_box）；旧版本只有整张画布坐标 bbox，
+  // 在 bbox_inches="tight" 裁边后会有偏移。
   const bbox = meta?.bbox || [0.125, 0.11, 0.775, 0.77]; // [left, bottom, width, height]
-  const plotLeft = dimensions.width * bbox[0];
-  const plotWidth = dimensions.width * bbox[2];
-  const plotTop = dimensions.height * (1 - bbox[1] - bbox[3]);
-  const plotHeight = dimensions.height * bbox[3];
+  const imageBox = meta?.image_box;
+  const plotLeft = dimensions.width * (imageBox ? imageBox[0] : bbox[0]);
+  const plotWidth = dimensions.width * (imageBox ? imageBox[2] : bbox[2]);
+  const plotTop = dimensions.height * (imageBox ? imageBox[1] : 1 - bbox[1] - bbox[3]);
+  const plotHeight = dimensions.height * (imageBox ? imageBox[3] : bbox[3]);
   const plotRight = plotLeft + plotWidth;
   const plotBottom = plotTop + plotHeight;
+  const xLog = meta?.xscale === "log" && currentXlim[0] > 0 && currentXlim[1] > 0;
+  const yLog = meta?.yscale === "log" && currentYlim[0] > 0 && currentYlim[1] > 0;
 
-  // 数据坐标 <-> 像素坐标 映射函数
+  // 数据坐标 <-> 像素坐标 映射函数（支持对数坐标轴）
   const yDataToPixel = useCallback(
     (y: number) => {
-      const span = currentYlim[1] - currentYlim[0] || 1e-4;
-      return plotTop + ((currentYlim[1] - y) / span) * plotHeight;
+      const [low, high] = yLog ? [Math.log10(currentYlim[0]), Math.log10(currentYlim[1])] : currentYlim;
+      const value = yLog ? Math.log10(Math.max(y, 1e-300)) : y;
+      return plotTop + ((high - value) / (high - low || 1e-4)) * plotHeight;
     },
-    [currentYlim, plotTop, plotHeight]
+    [currentYlim, plotTop, plotHeight, yLog]
   );
 
   const yPixelToData = useCallback(
     (py: number) => {
-      const span = currentYlim[1] - currentYlim[0] || 1e-4;
-      return currentYlim[1] - ((py - plotTop) / plotHeight) * span;
+      const [low, high] = yLog ? [Math.log10(currentYlim[0]), Math.log10(currentYlim[1])] : currentYlim;
+      const value = high - ((py - plotTop) / plotHeight) * (high - low || 1e-4);
+      return yLog ? 10 ** value : value;
     },
-    [currentYlim, plotTop, plotHeight]
+    [currentYlim, plotTop, plotHeight, yLog]
   );
 
   const xDataToPixel = useCallback(
     (x: number) => {
-      const span = currentXlim[1] - currentXlim[0] || 1e-4;
-      return plotLeft + ((x - currentXlim[0]) / span) * plotWidth;
+      const [low, high] = xLog ? [Math.log10(currentXlim[0]), Math.log10(currentXlim[1])] : currentXlim;
+      const value = xLog ? Math.log10(Math.max(x, 1e-300)) : x;
+      return plotLeft + ((value - low) / (high - low || 1e-4)) * plotWidth;
     },
-    [currentXlim, plotLeft, plotWidth]
+    [currentXlim, plotLeft, plotWidth, xLog]
   );
 
   const xPixelToData = useCallback(
     (px: number) => {
-      const span = currentXlim[1] - currentXlim[0] || 1e-4;
-      return currentXlim[0] + ((px - plotLeft) / plotWidth) * span;
+      const [low, high] = xLog ? [Math.log10(currentXlim[0]), Math.log10(currentXlim[1])] : currentXlim;
+      const value = low + ((px - plotLeft) / plotWidth) * (high - low || 1e-4);
+      return xLog ? 10 ** value : value;
     },
-    [currentXlim, plotLeft, plotWidth]
+    [currentXlim, plotLeft, plotWidth, xLog]
   );
 
   // 鼠标拖动处理
